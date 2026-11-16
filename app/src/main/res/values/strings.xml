@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">SPF</string>
+    <string name="tagline_cross_device">Mobile &amp; Computer Broiler Integration</string>
+    <string name="sign_in_google">Sign in with Google</string>
+    <string name="sign_out">Sign Out</string>
+    <string name="cloud_sync_active">Cloud Sync Active</string>
+</resources>

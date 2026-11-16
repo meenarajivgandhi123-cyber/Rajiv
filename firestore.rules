@@ -1,0 +1,683 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny all reads and writes by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // --- Entity Validation Helpers ---
+    function isValidZone(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.zoneCode is string && data.zoneCode.size() >= 1 && data.zoneCode.size() <= 30 &&
+             data.zoneName is string && data.zoneName.size() >= 1 && data.zoneName.size() <= 80 &&
+             data.region is string && data.region.size() >= 1 && data.region.size() <= 80 &&
+             (!('supervisorName' in data) || data.supervisorName == null || (data.supervisorName is string && data.supervisorName.size() <= 80)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidFarmer(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.farmCode is string && data.farmCode.size() >= 1 && data.farmCode.size() <= 30 &&
+             data.farmerName is string && data.farmerName.size() >= 1 && data.farmerName.size() <= 80 &&
+             (!('farmName' in data) || data.farmName == null || (data.farmName is string && data.farmName.size() <= 100)) &&
+             data.phone is string && data.phone.size() <= 30 &&
+             data.village is string && data.village.size() <= 100 &&
+             (!('tehsil' in data) || data.tehsil == null || (data.tehsil is string && data.tehsil.size() <= 100)) &&
+             (!('region' in data) || data.region == null || (data.region is string && data.region.size() <= 40)) &&
+             (!('farmType' in data) || data.farmType == null || (data.farmType is string && data.farmType.size() <= 40)) &&
+             (!('zoneId' in data) || data.zoneId == null || (data.zoneId is string && data.zoneId.size() <= 128)) &&
+             (!('zoneName' in data) || data.zoneName == null || (data.zoneName is string && data.zoneName.size() <= 80)) &&
+             (!('panNumber' in data) || data.panNumber == null || (data.panNumber is string && data.panNumber.size() <= 30)) &&
+             (!('aadhaarNumber' in data) || data.aadhaarNumber == null || (data.aadhaarNumber is string && data.aadhaarNumber.size() <= 30)) &&
+             (!('accountNumber' in data) || data.accountNumber == null || (data.accountNumber is string && data.accountNumber.size() <= 40)) &&
+             (!('bankName' in data) || data.bankName == null || (data.bankName is string && data.bankName.size() <= 80)) &&
+             (!('ifscCode' in data) || data.ifscCode == null || (data.ifscCode is string && data.ifscCode.size() <= 30)) &&
+             (!('accountType' in data) || data.accountType == null || (data.accountType is string && data.accountType.size() <= 30)) &&
+             data.shedType in ['EC', 'Open-Sided', 'Semi-EC'] &&
+             data.shedCapacity is int && data.shedCapacity >= 100 && data.shedCapacity <= 500000 &&
+             (!('totalSqft' in data) || (data.totalSqft is int && data.totalSqft >= 0 && data.totalSqft <= 500000)) &&
+             data.growingRatePerKg is number && data.growingRatePerKg >= 0 && data.growingRatePerKg <= 1000 &&
+             data.farmStatus in ['active', 'closing', 'empty', 'cancelled'] &&
+             (!('currentBatchId' in data) || data.currentBatchId == null || (data.currentBatchId is string && data.currentBatchId.size() <= 128)) &&
+             (!('currentBatchCode' in data) || data.currentBatchCode == null || (data.currentBatchCode is string && data.currentBatchCode.size() <= 40)) &&
+             (!('cancelReason' in data) || data.cancelReason == null || (data.cancelReason is string && data.cancelReason.size() <= 200)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidGcDetails(gc) {
+      return gc is map &&
+             gc.keys().hasOnly([
+               'companyName', 'companyAddress', 'companyPhone', 'companyPanGst',
+               'chickRate', 'feedRatePerKg', 'adminRatePerChick', 'medicineCost', 'otherExpCost',
+               'stdProductionCost', 'stdGcPerKg', 'saleRatePerKg', 'saleRateIncentive',
+               'lowCostIncentive', 'feedUnloadingAmount', 'miscAmount', 'cfcrWaiverAmount',
+               'highCostDeduction', 'birdsShortageDeduction', 'otherDeduction', 'waiverIfAny',
+               'tdsPercent', 'shortageBirds', 'shortageFeedBags', 'grade', 'meanAgeDays',
+               'miscDetail', 'otherDeductionDetail', 'createdByName', 'approvedByName',
+               'enteredByName', 'paymentByName'
+             ]) &&
+             gc.companyName is string && gc.companyName.size() <= 120 &&
+             gc.chickRate is number && gc.feedRatePerKg is number &&
+             gc.stdProductionCost is number && gc.stdGcPerKg is number &&
+             gc.tdsPercent is number && gc.tdsPercent >= 0 && gc.tdsPercent <= 30;
+    }
+
+    function isValidBatch(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.batchCode is string && data.batchCode.size() >= 1 && data.batchCode.size() <= 40 &&
+             isValidId(data.farmerId) &&
+             data.farmerName is string && data.farmerName.size() >= 1 && data.farmerName.size() <= 80 &&
+             (!('farmName' in data) || data.farmName == null || (data.farmName is string && data.farmName.size() <= 100)) &&
+             data.farmCode is string && data.farmCode.size() >= 1 && data.farmCode.size() <= 30 &&
+             (!('region' in data) || data.region == null || (data.region is string && data.region.size() <= 40)) &&
+             (!('zoneName' in data) || data.zoneName == null || (data.zoneName is string && data.zoneName.size() <= 80)) &&
+             (!('weekNumber' in data) || data.weekNumber == null || (data.weekNumber is string && data.weekNumber.size() <= 40)) &&
+             (!('challanNo' in data) || data.challanNo == null || (data.challanNo is string && data.challanNo.size() <= 40)) &&
+             data.breed is string && data.breed.size() >= 1 && data.breed.size() <= 50 &&
+             data.chicksPlaced is int && data.chicksPlaced >= 0 && data.chicksPlaced <= 500000 &&
+             data.freeChicks is int && data.freeChicks >= 0 && data.freeChicks <= 50000 &&
+             data.placementEpochDay is int && data.placementEpochDay >= 18000 && data.placementEpochDay <= 40000 &&
+             data.targetMarketAgeDays is int && data.targetMarketAgeDays >= 21 && data.targetMarketAgeDays <= 70 &&
+             data.targetAvgWeightKg is number && data.targetAvgWeightKg >= 1.0 && data.targetAvgWeightKg <= 5.0 &&
+             data.standardFcr is number && data.standardFcr >= 1.1 && data.standardFcr <= 2.5 &&
+             data.growingRatePerKg is number && data.growingRatePerKg >= 0 && data.growingRatePerKg <= 1000 &&
+             data.status in ['active', 'closing', 'closed'] &&
+             data.cumulativeMortality is int && data.cumulativeMortality >= 0 && data.cumulativeMortality <= 500000 &&
+             data.cumulativeFeedKg is number && data.cumulativeFeedKg >= 0 && data.cumulativeFeedKg <= 2000000 &&
+             data.latestAvgWeightGrams is number && data.latestAvgWeightGrams >= 0 && data.latestAvgWeightGrams <= 10000 &&
+             data.liftedBirds is int && data.liftedBirds >= 0 && data.liftedBirds <= 500000 &&
+             data.liftedWeightKg is number && data.liftedWeightKg >= 0 && data.liftedWeightKg <= 2000000 &&
+             data.returnedFeedKg is number && data.returnedFeedKg >= 0 && data.returnedFeedKg <= 500000 &&
+             data.settlementPayout is number && data.settlementPayout >= 0 && data.settlementPayout <= 100000000 &&
+             (!('closingNotes' in data) || data.closingNotes == null || (data.closingNotes is string && data.closingNotes.size() <= 300)) &&
+             data.closedEpochDay is int && data.closedEpochDay >= 0 && data.closedEpochDay <= 40000 &&
+             (!('gcDetails' in data) || data.gcDetails == null || isValidGcDetails(data.gcDetails)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidDailyLog(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             isValidId(data.batchId) &&
+             isValidId(data.farmerId) &&
+             data.dayNumber is int && data.dayNumber >= 0 && data.dayNumber <= 90 &&
+             data.logEpochDay is int && data.logEpochDay >= 18000 && data.logEpochDay <= 40000 &&
+             data.mortalityCount is int && data.mortalityCount >= 0 && data.mortalityCount <= 50000 &&
+             data.cullCount is int && data.cullCount >= 0 && data.cullCount <= 50000 &&
+             data.feedConsumedKg is number && data.feedConsumedKg >= 0 && data.feedConsumedKg <= 50000 &&
+             data.avgWeightGrams is number && data.avgWeightGrams >= 0 && data.avgWeightGrams <= 10000 &&
+             data.shedTempCelsius is number && data.shedTempCelsius >= 0 && data.shedTempCelsius <= 60 &&
+             (!('looseBirds' in data) || (data.looseBirds is int && data.looseBirds >= 0 && data.looseBirds <= 500000)) &&
+             (!('feederStock' in data) || (data.feederStock is int && data.feederStock >= 0 && data.feederStock <= 500000)) &&
+             (!('notes' in data) || data.notes == null || (data.notes is string && data.notes.size() <= 300)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidFeedDispatch(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             isValidId(data.batchId) &&
+             isValidId(data.farmerId) &&
+             data.farmerName is string && data.farmerName.size() >= 1 && data.farmerName.size() <= 80 &&
+             (!('farmCode' in data) || data.farmCode == null || (data.farmCode is string && data.farmCode.size() <= 30)) &&
+             (!('farmName' in data) || data.farmName == null || (data.farmName is string && data.farmName.size() <= 100)) &&
+             data.batchCode is string && data.batchCode.size() >= 1 && data.batchCode.size() <= 40 &&
+             data.feedType in ['Pre-Starter', 'Starter', 'Grower', 'Finisher'] &&
+             data.bagsCount is int && data.bagsCount >= 1 && data.bagsCount <= 10000 &&
+             data.weightKg is number && data.weightKg >= 1 && data.weightKg <= 500000 &&
+             data.challanNo is string && data.challanNo.size() >= 1 && data.challanNo.size() <= 40 &&
+             (!('vehicleNo' in data) || data.vehicleNo == null || (data.vehicleNo is string && data.vehicleNo.size() <= 30)) &&
+             (!('remarks' in data) || data.remarks == null || (data.remarks is string && data.remarks.size() <= 200)) &&
+             data.dispatchEpochDay is int && data.dispatchEpochDay >= 18000 && data.dispatchEpochDay <= 40000 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidBirdSale(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             isValidId(data.batchId) &&
+             isValidId(data.farmerId) &&
+             data.farmerName is string && data.farmerName.size() >= 1 && data.farmerName.size() <= 80 &&
+             data.farmCode is string && data.farmCode.size() >= 1 && data.farmCode.size() <= 30 &&
+             data.batchCode is string && data.batchCode.size() >= 1 && data.batchCode.size() <= 40 &&
+             data.buyerName is string && data.buyerName.size() >= 1 && data.buyerName.size() <= 80 &&
+             (!('buyerPhone' in data) || data.buyerPhone == null || (data.buyerPhone is string && data.buyerPhone.size() <= 30)) &&
+             (!('vehicleNo' in data) || data.vehicleNo == null || (data.vehicleNo is string && data.vehicleNo.size() <= 30)) &&
+             data.challanNo is string && data.challanNo.size() >= 1 && data.challanNo.size() <= 40 &&
+             (!('remarks' in data) || data.remarks == null || (data.remarks is string && data.remarks.size() <= 200)) &&
+              data.birdsSold is int && data.birdsSold >= 1 && data.birdsSold <= 500000 &&
+              data.totalWeightKg is number && data.totalWeightKg > 0 && data.totalWeightKg <= 2000000 &&
+              (!('ageDays' in data) || (data.ageDays is int && data.ageDays >= 0 && data.ageDays <= 365)) &&
+              (!('avgWeightKg' in data) || (data.avgWeightKg is number && data.avgWeightKg >= 0 && data.avgWeightKg <= 25)) &&
+              data.ratePerKg is number && data.ratePerKg >= 0 && data.ratePerKg <= 1000 &&
+             data.saleAmount is number && data.saleAmount >= 0 && data.saleAmount <= 200000000 &&
+             data.saleEpochDay is int && data.saleEpochDay >= 18000 && data.saleEpochDay <= 40000 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidFeedTransfer(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             isValidId(data.fromBatchId) &&
+             isValidId(data.fromFarmerId) &&
+             isValidId(data.toBatchId) &&
+             isValidId(data.toFarmerId) &&
+             data.fromBatchId != data.toBatchId &&
+             data.fromFarmerName is string && data.fromFarmerName.size() >= 1 && data.fromFarmerName.size() <= 80 &&
+             data.fromFarmCode is string && data.fromFarmCode.size() >= 1 && data.fromFarmCode.size() <= 30 &&
+             data.fromBatchCode is string && data.fromBatchCode.size() >= 1 && data.fromBatchCode.size() <= 40 &&
+             data.toFarmerName is string && data.toFarmerName.size() >= 1 && data.toFarmerName.size() <= 80 &&
+             data.toFarmCode is string && data.toFarmCode.size() >= 1 && data.toFarmCode.size() <= 30 &&
+             data.toBatchCode is string && data.toBatchCode.size() >= 1 && data.toBatchCode.size() <= 40 &&
+             data.feedType in ['Pre-Starter', 'Starter', 'Grower', 'Finisher'] &&
+             data.bagsCount is int && data.bagsCount >= 1 && data.bagsCount <= 10000 &&
+             data.weightKg is number && data.weightKg >= 1 && data.weightKg <= 500000 &&
+             data.transferRef is string && data.transferRef.size() >= 1 && data.transferRef.size() <= 40 &&
+             (!('remarks' in data) || data.remarks == null || (data.remarks is string && data.remarks.size() <= 200)) &&
+             data.transferEpochDay is int && data.transferEpochDay >= 18000 && data.transferEpochDay <= 40000 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidOperator(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.empCode is string && data.empCode.size() >= 2 && data.empCode.size() <= 30 &&
+             data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 80 &&
+             data.role in ['super_admin', 'admin', 'user'] &&
+             data.passwordHash is string && data.passwordHash.size() >= 16 && data.passwordHash.size() <= 160 &&
+             data.isActive is bool &&
+             (!('allowPreviousDateEntry' in data) || data.allowPreviousDateEntry is bool) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidKmEntry(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.empCode is string && data.empCode.size() >= 2 && data.empCode.size() <= 30 &&
+             data.operatorName is string && data.operatorName.size() >= 1 && data.operatorName.size() <= 80 &&
+             data.entryEpochDay is int && data.entryEpochDay >= 18000 && data.entryEpochDay <= 40000 &&
+             data.monthKey is string && data.monthKey.matches('^[0-9]{4}-[0-9]{2}$') &&
+             data.startKm is number && data.startKm >= 0 && data.startKm <= 1000000 &&
+             data.endKm is number && data.endKm >= data.startKm && data.endKm <= 1000000 &&
+             data.totalKm is number && data.totalKm >= 0 && data.totalKm <= 5000 &&
+             (!('visitedFarms' in data) || data.visitedFarms == null || (data.visitedFarms is string && data.visitedFarms.size() <= 300)) &&
+             (!('operatorId' in data) || data.operatorId == null || (data.operatorId is string && data.operatorId.size() <= 128)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidKmClaim(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.empCode is string && data.empCode.size() >= 2 && data.empCode.size() <= 30 &&
+             data.operatorName is string && data.operatorName.size() >= 1 && data.operatorName.size() <= 80 &&
+             data.claimMonthKey is string && data.claimMonthKey.matches('^[0-9]{4}-[0-9]{2}$') &&
+             data.claimMonthLabel is string && data.claimMonthLabel.size() >= 3 && data.claimMonthLabel.size() <= 30 &&
+             data.claimEpochDay is int && data.claimEpochDay >= 18000 && data.claimEpochDay <= 40000 &&
+             data.dailyEntriesCount is int && data.dailyEntriesCount >= 1 && data.dailyEntriesCount <= 1000 &&
+             data.startKm is number && data.startKm >= 0 && data.startKm <= 1000000 &&
+             data.endKm is number && data.endKm >= 0 && data.endKm <= 1000000 &&
+             data.totalKm is number && data.totalKm >= 0 && data.totalKm <= 50000 &&
+             data.ratePerKm is number && data.ratePerKm >= 0 && data.ratePerKm <= 500 &&
+             data.claimAmount is number && data.claimAmount >= 0 && data.claimAmount <= 5000000 &&
+             (!('visitedFarms' in data) || data.visitedFarms == null || (data.visitedFarms is string && data.visitedFarms.size() <= 300)) &&
+             data.status in ['pending', 'approved', 'rejected'] &&
+             (!('operatorId' in data) || data.operatorId == null || (data.operatorId is string && data.operatorId.size() <= 128)) &&
+             (!('reviewedByEmpCode' in data) || data.reviewedByEmpCode == null || (data.reviewedByEmpCode is string && data.reviewedByEmpCode.size() <= 30)) &&
+             (!('reviewedByName' in data) || data.reviewedByName == null || (data.reviewedByName is string && data.reviewedByName.size() <= 80)) &&
+             (!('reviewRemarks' in data) || data.reviewRemarks == null || (data.reviewRemarks is string && data.reviewRemarks.size() <= 300)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidMedicineEntry(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             isValidId(data.batchId) &&
+             isValidId(data.farmerId) &&
+             data.farmerName is string && data.farmerName.size() >= 1 && data.farmerName.size() <= 80 &&
+             data.farmCode is string && data.farmCode.size() >= 1 && data.farmCode.size() <= 30 &&
+             data.batchCode is string && data.batchCode.size() >= 1 && data.batchCode.size() <= 30 &&
+             data.medicineName is string && data.medicineName.size() >= 1 && data.medicineName.size() <= 100 &&
+             data.category in ['Vaccine', 'Antibiotic', 'Supplement / Vitamin', 'Sanitizer', 'Other'] &&
+             (!('dosageOrQty' in data) || data.dosageOrQty == null || (data.dosageOrQty is string && data.dosageOrQty.size() <= 60)) &&
+             data.totalCost is number && data.totalCost >= 0 && data.totalCost <= 5000000 &&
+             data.invoiceOrSlipNo is string && data.invoiceOrSlipNo.size() >= 1 && data.invoiceOrSlipNo.size() <= 40 &&
+             (!('remarks' in data) || data.remarks == null || (data.remarks is string && data.remarks.size() <= 300)) &&
+             data.entryEpochDay is int && data.entryEpochDay >= 18000 && data.entryEpochDay <= 40000 &&
+             (!('enteredByEmpCode' in data) || data.enteredByEmpCode == null || (data.enteredByEmpCode is string && data.enteredByEmpCode.size() <= 30)) &&
+             (!('enteredByName' in data) || data.enteredByName == null || (data.enteredByName is string && data.enteredByName.size() <= 80)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    // --- User-Scoped Subcollections ---
+    match /users/{userId} {
+      allow read, write: if false;
+
+      match /zones/{zoneId} {
+        allow get: if isOwner(userId) && isValidId(zoneId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(zoneId) &&
+                         isValidZone(incoming()) &&
+                         incoming().keys().hasAll([
+                           'userId', 'zoneCode', 'zoneName', 'region', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'zoneCode', 'zoneName', 'region', 'supervisorName', 'createdAt', 'updatedAt'
+                         ]);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(zoneId) &&
+                         isValidZone(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'zoneCode', 'zoneName', 'region', 'supervisorName', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(zoneId);
+      }
+
+      match /operators/{operatorId} {
+        allow get: if isOwner(userId) && isValidId(operatorId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(operatorId) &&
+                         isValidOperator(incoming()) &&
+                         incoming().keys().hasAll([
+                           'userId', 'empCode', 'fullName', 'role', 'passwordHash',
+                           'isActive', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'empCode', 'fullName', 'role', 'passwordHash',
+                           'isActive', 'allowPreviousDateEntry', 'createdAt', 'updatedAt'
+                         ]);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(operatorId) &&
+                         isValidOperator(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'fullName', 'role', 'passwordHash', 'isActive', 'allowPreviousDateEntry', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(operatorId);
+      }
+
+      match /farmers/{farmerId} {
+        allow get: if isOwner(userId) && isValidId(farmerId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(farmerId) &&
+                         isValidFarmer(incoming()) &&
+                         incoming().keys().hasAll([
+                           'userId', 'farmCode', 'farmerName', 'phone', 'village',
+                           'shedType', 'shedCapacity', 'growingRatePerKg', 'farmStatus',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'farmCode', 'farmerName', 'farmName', 'phone', 'village',
+                           'tehsil', 'region', 'farmType',
+                           'zoneId', 'zoneName', 'panNumber', 'aadhaarNumber',
+                           'accountNumber', 'bankName', 'ifscCode', 'accountType',
+                           'shedType', 'shedCapacity', 'totalSqft', 'growingRatePerKg', 'farmStatus',
+                           'currentBatchId', 'currentBatchCode', 'cancelReason',
+                           'createdAt', 'updatedAt'
+                         ]);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(farmerId) &&
+                         isValidFarmer(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'farmCode', 'farmerName', 'farmName', 'phone', 'village',
+                             'tehsil', 'region', 'farmType',
+                             'zoneId', 'zoneName', 'panNumber', 'aadhaarNumber',
+                             'accountNumber', 'bankName', 'ifscCode', 'accountType',
+                             'shedType', 'shedCapacity', 'totalSqft', 'growingRatePerKg', 'updatedAt'
+                           ]) ||
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'farmStatus', 'currentBatchId', 'currentBatchCode', 'cancelReason', 'updatedAt'
+                           ])
+                         );
+
+        allow delete: if isOwner(userId) && isValidId(farmerId);
+      }
+
+      match /batches/{batchId} {
+        allow get: if isOwner(userId) && isValidId(batchId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(batchId) &&
+                         isValidBatch(incoming()) &&
+                         incoming().status in ['active', 'closed'] &&
+                         incoming().keys().hasAll([
+                           'userId', 'batchCode', 'farmerId', 'farmerName', 'farmCode',
+                           'breed', 'chicksPlaced', 'freeChicks', 'placementEpochDay',
+                           'targetMarketAgeDays', 'targetAvgWeightKg', 'standardFcr',
+                           'growingRatePerKg', 'status', 'cumulativeMortality',
+                           'cumulativeFeedKg', 'latestAvgWeightGrams', 'liftedBirds',
+                           'liftedWeightKg', 'returnedFeedKg', 'settlementPayout',
+                           'closedEpochDay', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'batchCode', 'farmerId', 'farmerName', 'farmName', 'farmCode',
+                           'region', 'zoneName', 'weekNumber', 'challanNo',
+                           'breed', 'chicksPlaced', 'freeChicks', 'placementEpochDay',
+                           'targetMarketAgeDays', 'targetAvgWeightKg', 'standardFcr',
+                           'growingRatePerKg', 'status', 'cumulativeMortality',
+                           'cumulativeFeedKg', 'latestAvgWeightGrams', 'liftedBirds',
+                           'liftedWeightKg', 'returnedFeedKg', 'settlementPayout',
+                           'closingNotes', 'closedEpochDay', 'gcDetails', 'createdAt', 'updatedAt'
+                         ]) &&
+                         exists(/databases/$(database)/documents/users/$(userId)/farmers/$(incoming().farmerId));
+
+        allow update: if isOwner(userId) &&
+                         isValidId(batchId) &&
+                         isValidBatch(incoming()) &&
+                         existing().status != 'closed' &&
+                         incoming().userId == existing().userId &&
+                         incoming().farmerId == existing().farmerId &&
+                         incoming().createdAt == existing().createdAt &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'batchCode', 'farmName', 'region', 'zoneName', 'weekNumber', 'challanNo',
+                             'breed', 'chicksPlaced', 'freeChicks', 'placementEpochDay',
+                             'targetMarketAgeDays', 'targetAvgWeightKg', 'standardFcr', 'growingRatePerKg', 'updatedAt'
+                           ]) ||
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'cumulativeMortality', 'cumulativeFeedKg', 'latestAvgWeightGrams', 'updatedAt'
+                           ]) ||
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'liftedBirds', 'liftedWeightKg', 'updatedAt'
+                           ]) ||
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'status', 'liftedBirds', 'liftedWeightKg', 'returnedFeedKg',
+                             'settlementPayout', 'closingNotes', 'closedEpochDay', 'gcDetails', 'updatedAt'
+                           ])
+                         );
+
+        allow delete: if isOwner(userId) &&
+                         isValidId(batchId) &&
+                         existing().status != 'closed';
+      }
+
+      match /dailyLogs/{logId} {
+        allow get: if isOwner(userId) && isValidId(logId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(logId) &&
+                         isValidDailyLog(incoming()) &&
+                         incoming().keys().hasAll([
+                           'userId', 'batchId', 'farmerId', 'dayNumber', 'logEpochDay',
+                           'mortalityCount', 'cullCount', 'feedConsumedKg',
+                           'avgWeightGrams', 'shedTempCelsius', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'batchId', 'farmerId', 'dayNumber', 'logEpochDay',
+                           'mortalityCount', 'cullCount', 'feedConsumedKg',
+                           'avgWeightGrams', 'shedTempCelsius', 'looseBirds', 'feederStock',
+                           'notes', 'createdAt', 'updatedAt'
+                         ]) &&
+                         exists(/databases/$(database)/documents/users/$(userId)/batches/$(incoming().batchId));
+
+        allow update: if isOwner(userId) &&
+                         isValidId(logId) &&
+                         isValidDailyLog(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().batchId == existing().batchId &&
+                         incoming().farmerId == existing().farmerId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'dayNumber', 'logEpochDay', 'mortalityCount', 'cullCount',
+                           'feedConsumedKg', 'avgWeightGrams', 'shedTempCelsius',
+                           'looseBirds', 'feederStock', 'notes', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(logId);
+      }
+
+      match /feedDispatches/{dispatchId} {
+        allow get: if isOwner(userId) && isValidId(dispatchId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(dispatchId) &&
+                         isValidFeedDispatch(incoming()) &&
+                         incoming().keys().hasAll([
+                           'userId', 'batchId', 'farmerId', 'farmerName', 'batchCode',
+                           'feedType', 'bagsCount', 'weightKg', 'challanNo',
+                           'dispatchEpochDay', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'batchId', 'farmerId', 'farmerName', 'farmCode', 'farmName',
+                           'batchCode', 'feedType', 'bagsCount', 'weightKg', 'challanNo',
+                           'vehicleNo', 'remarks', 'dispatchEpochDay', 'createdAt', 'updatedAt'
+                         ]) &&
+                         exists(/databases/$(database)/documents/users/$(userId)/batches/$(incoming().batchId));
+
+        allow update: if isOwner(userId) &&
+                         isValidId(dispatchId) &&
+                         isValidFeedDispatch(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().batchId == existing().batchId &&
+                         incoming().farmerId == existing().farmerId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'feedType', 'bagsCount', 'weightKg', 'challanNo',
+                           'vehicleNo', 'remarks', 'dispatchEpochDay', 'updatedAt'
+                         ]);
+        allow delete: if isOwner(userId) && isValidId(dispatchId);
+      }
+
+      match /birdSales/{saleId} {
+        allow get: if isOwner(userId) && isValidId(saleId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(saleId) &&
+                         isValidBirdSale(incoming()) &&
+                         incoming().keys().hasAll([
+                           'userId', 'batchId', 'farmerId', 'farmerName', 'farmCode', 'batchCode',
+                           'buyerName', 'challanNo', 'birdsSold', 'totalWeightKg', 'ratePerKg',
+                           'saleAmount', 'saleEpochDay', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'batchId', 'farmerId', 'farmerName', 'farmCode', 'batchCode',
+                           'buyerName', 'buyerPhone', 'vehicleNo', 'challanNo', 'remarks',
+                           'birdsSold', 'totalWeightKg', 'ageDays', 'avgWeightKg',
+                           'ratePerKg', 'saleAmount', 'saleEpochDay', 'createdAt', 'updatedAt'
+                         ]) &&
+                         exists(/databases/$(database)/documents/users/$(userId)/batches/$(incoming().batchId));
+
+        allow update: if isOwner(userId) &&
+                         isValidId(saleId) &&
+                         isValidBirdSale(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().batchId == existing().batchId &&
+                         incoming().farmerId == existing().farmerId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'buyerName', 'buyerPhone', 'vehicleNo', 'challanNo', 'remarks',
+                           'birdsSold', 'totalWeightKg', 'ageDays', 'avgWeightKg',
+                           'ratePerKg', 'saleAmount', 'saleEpochDay', 'updatedAt'
+                         ]);
+        allow delete: if isOwner(userId) && isValidId(saleId);
+      }
+
+      match /feedTransfers/{transferId} {
+        allow get: if isOwner(userId) && isValidId(transferId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(transferId) &&
+                         isValidFeedTransfer(incoming()) &&
+                         incoming().keys().hasAll([
+                           'userId', 'fromBatchId', 'fromFarmerId', 'fromFarmerName', 'fromFarmCode', 'fromBatchCode',
+                           'toBatchId', 'toFarmerId', 'toFarmerName', 'toFarmCode', 'toBatchCode',
+                           'feedType', 'bagsCount', 'weightKg', 'transferRef', 'transferEpochDay',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'fromBatchId', 'fromFarmerId', 'fromFarmerName', 'fromFarmCode', 'fromBatchCode',
+                           'toBatchId', 'toFarmerId', 'toFarmerName', 'toFarmCode', 'toBatchCode',
+                           'feedType', 'bagsCount', 'weightKg', 'transferRef', 'remarks', 'transferEpochDay',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         exists(/databases/$(database)/documents/users/$(userId)/batches/$(incoming().fromBatchId)) &&
+                         exists(/databases/$(database)/documents/users/$(userId)/batches/$(incoming().toBatchId));
+
+        allow update: if isOwner(userId) &&
+                         isValidId(transferId) &&
+                         isValidFeedTransfer(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().fromBatchId == existing().fromBatchId &&
+                         incoming().toBatchId == existing().toBatchId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'feedType', 'bagsCount', 'weightKg', 'transferRef', 'remarks', 'transferEpochDay', 'updatedAt'
+                         ]);
+        allow delete: if isOwner(userId) && isValidId(transferId);
+      }
+
+      match /kmEntries/{entryId} {
+        allow get: if isOwner(userId) && isValidId(entryId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(entryId) &&
+                         isValidKmEntry(incoming()) &&
+                         incoming().keys().hasAll([
+                           'userId', 'empCode', 'operatorName', 'entryEpochDay', 'monthKey',
+                           'startKm', 'endKm', 'totalKm', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'operatorId', 'empCode', 'operatorName', 'entryEpochDay', 'monthKey',
+                           'startKm', 'endKm', 'totalKm', 'visitedFarms', 'createdAt', 'updatedAt'
+                         ]);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(entryId) &&
+                         isValidKmEntry(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().empCode == existing().empCode &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'startKm', 'endKm', 'totalKm', 'visitedFarms', 'entryEpochDay', 'monthKey', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(entryId);
+      }
+
+      match /kmClaims/{claimId} {
+        allow get: if isOwner(userId) && isValidId(claimId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(claimId) &&
+                         isValidKmClaim(incoming()) &&
+                         incoming().status == 'pending' &&
+                         claimId.matches('^kmc_[A-Za-z0-9_-]+_' + incoming().claimMonthKey + '$') &&
+                         incoming().keys().hasAll([
+                           'userId', 'empCode', 'operatorName', 'claimMonthKey', 'claimMonthLabel',
+                           'claimEpochDay', 'dailyEntriesCount', 'startKm', 'endKm', 'totalKm',
+                           'ratePerKm', 'claimAmount', 'status', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'operatorId', 'empCode', 'operatorName',
+                           'claimMonthKey', 'claimMonthLabel', 'claimEpochDay', 'dailyEntriesCount',
+                           'startKm', 'endKm', 'totalKm', 'ratePerKm', 'claimAmount', 'visitedFarms',
+                           'status', 'reviewedByEmpCode', 'reviewedByName', 'reviewRemarks',
+                           'createdAt', 'updatedAt'
+                         ]);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(claimId) &&
+                         isValidKmClaim(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().empCode == existing().empCode &&
+                         incoming().claimMonthKey == existing().claimMonthKey &&
+                         incoming().createdAt == existing().createdAt &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'totalKm', 'ratePerKm', 'claimAmount', 'visitedFarms', 'updatedAt'
+                           ]) ||
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'status', 'reviewedByEmpCode', 'reviewedByName', 'reviewRemarks', 'updatedAt'
+                           ])
+                         );
+
+        allow delete: if isOwner(userId) && isValidId(claimId);
+      }
+
+      match /medicineEntries/{entryId} {
+        allow get: if isOwner(userId) && isValidId(entryId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(entryId) &&
+                         isValidMedicineEntry(incoming()) &&
+                         incoming().keys().hasAll([
+                           'userId', 'batchId', 'farmerId', 'farmerName', 'farmCode', 'batchCode',
+                           'medicineName', 'category', 'totalCost', 'invoiceOrSlipNo', 'entryEpochDay',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'batchId', 'farmerId', 'farmerName', 'farmCode', 'batchCode',
+                           'medicineName', 'category', 'dosageOrQty', 'totalCost', 'invoiceOrSlipNo',
+                           'remarks', 'entryEpochDay', 'enteredByEmpCode', 'enteredByName',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         exists(/databases/$(database)/documents/users/$(userId)/batches/$(incoming().batchId));
+
+        allow update: if isOwner(userId) &&
+                         isValidId(entryId) &&
+                         isValidMedicineEntry(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().batchId == existing().batchId &&
+                         incoming().farmerId == existing().farmerId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'medicineName', 'category', 'dosageOrQty', 'totalCost',
+                           'invoiceOrSlipNo', 'remarks', 'entryEpochDay', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(entryId);
+      }
+    }
+  }
+}

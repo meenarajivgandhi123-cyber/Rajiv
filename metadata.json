@@ -1,0 +1,6 @@
+{
+  "name": "SPF",
+  "description": "SPF Poultry Integration — cross-device mobile and computer app for zone-wise broiler tracking, farmer & batch management, feed dispatch, birds sales, inter-feed transfers, daily logs, and GC Closed PDF statements.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
