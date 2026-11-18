@@ -80,6 +80,7 @@ import com.example.data.model.IntegrationZone
 import com.example.data.model.KmClaim
 import com.example.data.model.KmClaimReportCalculator
 import com.example.data.model.KmDailyEntry
+import com.example.data.model.MedicineCatalogItem
 import com.example.data.model.MedicineEntry
 import com.example.data.model.OperatorRole
 import com.example.data.repository.BroilerRepository
@@ -102,6 +103,7 @@ import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.FarmerFormDialog
 import com.example.ui.components.FeedDispatchDialog
 import com.example.ui.components.FeedTransferDialog
+import com.example.ui.components.MedicineCatalogDialog
 import com.example.ui.components.MedicineEntryDialog
 import com.example.ui.components.ReviewKmClaimDialog
 import com.example.ui.components.ZoneFormDialog
@@ -130,6 +132,7 @@ private sealed interface DeleteTarget {
   data class BirdSaleTarget(val sale: BirdSale, val batch: FlockBatch?) : DeleteTarget
   data class FeedTransferTarget(val transfer: FeedTransfer) : DeleteTarget
   data class MedicineEntryTarget(val entry: MedicineEntry) : DeleteTarget
+  data class MedicineCatalogTarget(val item: MedicineCatalogItem) : DeleteTarget
   data class KmDailyEntryTarget(val entry: KmDailyEntry) : DeleteTarget
   data class KmClaimTarget(val claim: KmClaim) : DeleteTarget
 }
@@ -195,7 +198,10 @@ fun BroilerApp(
 
   var showMedicineEntryDialog by remember { mutableStateOf(false) }
   var medicineEntryPreselectedBatch by remember { mutableStateOf<FlockBatch?>(null) }
+  var medicineEntryPreselectedCatalogItem by remember { mutableStateOf<MedicineCatalogItem?>(null) }
   var editingMedicineEntry by remember { mutableStateOf<MedicineEntry?>(null) }
+  var showCreateMedicineCatalogDialog by remember { mutableStateOf(false) }
+  var editingMedicineCatalogItem by remember { mutableStateOf<MedicineCatalogItem?>(null) }
 
   var closingBatch by remember { mutableStateOf<FlockBatch?>(null) }
 
@@ -286,9 +292,17 @@ fun BroilerApp(
       LaunchedEffect(currentUser.uid) {
         viewModel.syncMasterFarmersIfNeeded(context)
       }
+      LaunchedEffect(currentUser.uid, currentUser.email, state.operators, controls.manualOperatorLogout) {
+        viewModel.resolveAutoEmailLogin(
+          workspaceEmail = currentUser.email,
+          displayName = currentUser.displayName,
+          operators = state.operators,
+        )
+      }
       val selectedOperator = controls.activeOperator
       if (selectedOperator == null) {
         OperatorLoginScreen(
+          rawEmail = currentUser.email,
           workspaceEmail = currentUser.email ?: currentUser.displayName ?: "Cloud Workspace",
           operators = state.operators,
           isSaving = controls.isSaving,
@@ -296,8 +310,11 @@ fun BroilerApp(
           onEmpCodeLogin = { role, code, password ->
             viewModel.loginWithEmpCode(state.operators, role, code, password)
           },
-          onBootstrapSuperAdmin = { code, fullName, password ->
-            viewModel.bootstrapSuperAdmin(code, fullName, password)
+          onQuickEmailLogin = { operator ->
+            viewModel.loginWithMappedEmail(operator)
+          },
+          onBootstrapSuperAdmin = { code, fullName, password, mappedEmail ->
+            viewModel.bootstrapSuperAdmin(code, fullName, password, mappedEmail)
           },
           onClearError = { viewModel.clearLoginError() },
           onDisconnectGoogle = { signOutUser(credentialManager, coroutineScope) },
@@ -732,6 +749,7 @@ fun BroilerApp(
                   birdSales = state.birdSales,
                   feedTransfers = state.feedTransfers,
                   medicineEntries = state.medicineEntries,
+                  medicinesCatalog = state.medicinesCatalog,
                   kmEntries = state.kmEntries,
                   kmClaims = state.kmClaims,
                   todayEpochDay = viewModel.todayEpochDay,
@@ -790,11 +808,23 @@ fun BroilerApp(
                   onAddMedicineEntryClick = {
                     requireAdmin {
                       medicineEntryPreselectedBatch = null
+                      medicineEntryPreselectedCatalogItem = null
                       showMedicineEntryDialog = true
                     }
                   },
                   onEditMedicineEntryClick = { m -> requireAdmin { editingMedicineEntry = m } },
                   onDeleteMedicineEntryClick = { m -> requireAdmin { deleteTarget = DeleteTarget.MedicineEntryTarget(m) } },
+                  onSyncMasterMedicinesClick = { viewModel.syncMasterMedicinesNow(context) },
+                  onCreateMedicineCatalogClick = { requireAdmin { showCreateMedicineCatalogDialog = true } },
+                  onEditMedicineCatalogClick = { item -> requireAdmin { editingMedicineCatalogItem = item } },
+                  onDeleteMedicineCatalogClick = { item -> requireAdmin { deleteTarget = DeleteTarget.MedicineCatalogTarget(item) } },
+                  onIssueMedicineCatalogClick = { item ->
+                    requireAdmin {
+                      medicineEntryPreselectedBatch = null
+                      medicineEntryPreselectedCatalogItem = item
+                      showMedicineEntryDialog = true
+                    }
+                  },
                   onAddFeedTransferClick = {
                     feedTransferPreselectedBatch = null
                     showFeedTransferDialog = true
@@ -845,11 +875,12 @@ fun BroilerApp(
                   StaffScreen(
                     operators = state.operators,
                     currentOperatorId = activeOperator.id,
-                    onCreateOperator = { code, name, role, password, allowPrev ->
-                      viewModel.createOperator(code, name, role, password, allowPrev)
+                    workspaceEmail = currentUser.email.orEmpty(),
+                    onCreateOperator = { code, name, role, password, allowPrev, mappedEmail ->
+                      viewModel.createOperator(code, name, role, password, allowPrev, mappedEmail)
                     },
-                    onUpdateOperator = { id, name, role, active, newPwd, allowPrev ->
-                      viewModel.updateOperator(id, name, role, active, newPwd, allowPrev)
+                    onUpdateOperator = { id, name, role, active, newPwd, allowPrev, mappedEmail ->
+                      viewModel.updateOperator(id, name, role, active, newPwd, allowPrev, mappedEmail)
                     },
                     onDeleteOperator = { op -> viewModel.deleteOperator(op) },
                   )
@@ -916,6 +947,7 @@ fun BroilerApp(
                 val emptyFarms = state.farmers.filter { it.statusEnum == FarmStatus.EMPTY }
                 CreateBatchDialog(
                   eligibleFarmers = emptyFarms,
+                  allFarmers = state.farmers,
                   todayEpochDay = viewModel.todayEpochDay,
                   canSelectPreviousDate = canSelectPreviousDate,
                   preselectedFarmer = createBatchPreselectedFarmer,
@@ -1017,11 +1049,23 @@ fun BroilerApp(
                     showFeedDispatchDialog = false
                     feedDispatchPreselectedBatch = null
                   },
-                  onSaveDispatch = { batch, feedType, bags, weightKg, challan, vehicleNo, remarks, reqDay ->
+                  onSaveDispatch = { batch, feedType, bags, weightKg, unitRate, rateBasis, totalAmount, challan, vehicleNo, remarks, reqDay ->
                     showFeedDispatchDialog = false
                     feedDispatchPreselectedBatch = null
                     if (batch != null) {
-                      viewModel.addFeedDispatch(batch, feedType, bags, weightKg, challan, reqDay, vehicleNo, remarks)
+                      viewModel.addFeedDispatch(
+                        batch = batch,
+                        feedType = feedType,
+                        bagsCount = bags,
+                        weightKg = weightKg,
+                        challanNo = challan,
+                        requestedDispatchEpochDay = reqDay,
+                        vehicleNo = vehicleNo,
+                        remarks = remarks,
+                        unitRate = unitRate,
+                        rateBasis = rateBasis,
+                        totalAmount = totalAmount,
+                      )
                     }
                   },
                 )
@@ -1034,9 +1078,21 @@ fun BroilerApp(
                   canSelectPreviousDate = canSelectPreviousDate,
                   existingDispatch = d,
                   onDismiss = { editingFeedDispatch = null },
-                  onSaveDispatch = { _, feedType, bags, weightKg, challan, vehicleNo, remarks, reqDay ->
+                  onSaveDispatch = { _, feedType, bags, weightKg, unitRate, rateBasis, totalAmount, challan, vehicleNo, remarks, reqDay ->
                     editingFeedDispatch = null
-                    viewModel.updateFeedDispatch(d, feedType, bags, weightKg, challan, vehicleNo, remarks, reqDay)
+                    viewModel.updateFeedDispatch(
+                      dispatch = d,
+                      feedType = feedType,
+                      bagsCount = bags,
+                      weightKg = weightKg,
+                      challanNo = challan,
+                      vehicleNo = vehicleNo,
+                      remarks = remarks,
+                      requestedEpochDay = reqDay,
+                      unitRate = unitRate,
+                      rateBasis = rateBasis,
+                      totalAmount = totalAmount,
+                    )
                   },
                 )
               }
@@ -1117,13 +1173,17 @@ fun BroilerApp(
                   todayEpochDay = viewModel.todayEpochDay,
                   canSelectPreviousDate = canSelectPreviousDate,
                   preselectedBatch = medicineEntryPreselectedBatch,
+                  medicineCatalog = state.medicinesCatalog,
+                  preselectedCatalogItem = medicineEntryPreselectedCatalogItem,
                   onDismiss = {
                     showMedicineEntryDialog = false
                     medicineEntryPreselectedBatch = null
+                    medicineEntryPreselectedCatalogItem = null
                   },
                   onSaveMedicine = { batch, medName, category, dosage, cost, slipNo, remarks, reqDay ->
                     showMedicineEntryDialog = false
                     medicineEntryPreselectedBatch = null
+                    medicineEntryPreselectedCatalogItem = null
                     if (batch != null) {
                       viewModel.addMedicineEntry(batch, medName, category, dosage, cost, slipNo, remarks, reqDay)
                     }
@@ -1137,10 +1197,32 @@ fun BroilerApp(
                   todayEpochDay = viewModel.todayEpochDay,
                   canSelectPreviousDate = canSelectPreviousDate,
                   existingEntry = entry,
+                  medicineCatalog = state.medicinesCatalog,
                   onDismiss = { editingMedicineEntry = null },
                   onSaveMedicine = { _, medName, category, dosage, cost, slipNo, remarks, reqDay ->
                     editingMedicineEntry = null
                     viewModel.updateMedicineEntry(entry, medName, category, dosage, cost, slipNo, remarks, reqDay)
+                  },
+                )
+              }
+
+              if (showCreateMedicineCatalogDialog) {
+                MedicineCatalogDialog(
+                  onDismiss = { showCreateMedicineCatalogDialog = false },
+                  onSaveItem = { code, name, category, packing, unit, rate, perKgOrLtr ->
+                    showCreateMedicineCatalogDialog = false
+                    viewModel.createMedicineCatalogItem(code, name, category, packing, unit, rate, perKgOrLtr)
+                  },
+                )
+              }
+
+              editingMedicineCatalogItem?.let { item ->
+                MedicineCatalogDialog(
+                  existingItem = item,
+                  onDismiss = { editingMedicineCatalogItem = null },
+                  onSaveItem = { code, name, category, packing, unit, rate, perKgOrLtr ->
+                    editingMedicineCatalogItem = null
+                    viewModel.updateMedicineCatalogItem(item, code, name, category, packing, unit, rate, perKgOrLtr)
                   },
                 )
               }
@@ -1224,6 +1306,7 @@ fun BroilerApp(
                   is DeleteTarget.BirdSaleTarget -> "Delete Bird Sale" to "Delete sale challan ${target.sale.challanNo} and revert lifted count?"
                   is DeleteTarget.FeedTransferTarget -> "Delete Inter-Feed Transfer" to "Delete transfer ${target.transfer.transferRef}?"
                   is DeleteTarget.MedicineEntryTarget -> "Delete Medicine Entry" to "Delete ${target.entry.medicineName} (${target.entry.invoiceOrSlipNo})?"
+                  is DeleteTarget.MedicineCatalogTarget -> "Delete Medicine Catalog Item" to "Remove ${target.item.medicineCode} (${target.item.medicineName}) from the master medicine list?"
                   is DeleteTarget.KmDailyEntryTarget -> "Delete Daily KM Entry" to "Delete daily KM entry (${target.entry.totalKm.toInt()} km) for ${target.entry.empCode}?"
                   is DeleteTarget.KmClaimTarget -> "Delete Monthly KM Claim" to "Delete ${target.claim.resolvedMonthLabel} KM claim for ${target.claim.empCode}?"
                 }
@@ -1243,6 +1326,7 @@ fun BroilerApp(
                       is DeleteTarget.BirdSaleTarget -> viewModel.deleteBirdSale(snap.sale, snap.batch)
                       is DeleteTarget.FeedTransferTarget -> viewModel.deleteFeedTransfer(snap.transfer)
                       is DeleteTarget.MedicineEntryTarget -> viewModel.deleteMedicineEntry(snap.entry)
+                      is DeleteTarget.MedicineCatalogTarget -> viewModel.deleteMedicineCatalogItem(snap.item)
                       is DeleteTarget.KmDailyEntryTarget -> viewModel.deleteDailyKmEntry(snap.entry)
                       is DeleteTarget.KmClaimTarget -> viewModel.deleteKmClaim(snap.claim)
                     }

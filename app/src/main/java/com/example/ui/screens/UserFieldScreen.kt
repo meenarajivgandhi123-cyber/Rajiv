@@ -346,11 +346,27 @@ fun UserFeedDispatchScreen(
                 text = "${dispatch.feedType} • ${dispatch.challanNo}",
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
               )
-              Text(
-                text = "${dispatch.bagsCount} bags (${formatDecimal(dispatch.weightKg, 0)} kg)",
-                style = MonoMetricMedium,
-                color = MaterialTheme.colorScheme.primary,
-              )
+              Column(horizontalAlignment = Alignment.End) {
+                Text(
+                  text = "${dispatch.bagsCount} bags (${formatDecimal(dispatch.weightKg, 0)} kg)",
+                  style = MonoMetricMedium,
+                  color = MaterialTheme.colorScheme.primary,
+                )
+                if (dispatch.resolvedTotalAmount > 0.0 || dispatch.unitRate > 0.0) {
+                  val priceText = buildString {
+                    if (dispatch.resolvedTotalAmount > 0.0) append(formatCurrency(dispatch.resolvedTotalAmount))
+                    if (dispatch.unitRate > 0.0) {
+                      if (isNotEmpty()) append(" ")
+                      append("@ ${formatCurrency(dispatch.unitRate)}${dispatch.rateBasisEnum.unitSuffix}")
+                    }
+                  }
+                  Text(
+                    text = priceText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
+              }
             }
             Text(
               text = "To: $farmLabel (${dispatch.batchCode})",

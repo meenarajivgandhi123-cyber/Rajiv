@@ -31,6 +31,7 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Sell
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -59,6 +60,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.model.BatchStatus
 import com.example.data.model.BirdSale
@@ -74,10 +76,13 @@ import com.example.data.model.FlockBatch
 import com.example.data.model.IntegrationZone
 import com.example.data.model.KmClaim
 import com.example.data.model.KmDailyEntry
+import com.example.data.model.MedicineCatalogItem
+import com.example.data.model.MedicineCategory
 import com.example.data.model.MedicineEntry
 import com.example.data.model.SettlementCalculator
 import com.example.data.model.ZoneDailyReportSummary
 import com.example.data.model.ZoneReportCalculator
+import com.example.data.model.filterAndRankMedicineCatalog
 import com.example.ui.components.BatchStatusBadge
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.StatusPill
@@ -114,6 +119,7 @@ fun SettlementsScreen(
   birdSales: List<BirdSale>,
   feedTransfers: List<FeedTransfer>,
   medicineEntries: List<MedicineEntry>,
+  medicinesCatalog: List<MedicineCatalogItem> = emptyList(),
   kmEntries: List<KmDailyEntry>,
   kmClaims: List<KmClaim>,
   todayEpochDay: Long,
@@ -135,6 +141,11 @@ fun SettlementsScreen(
   onAddMedicineEntryClick: () -> Unit,
   onEditMedicineEntryClick: (MedicineEntry) -> Unit,
   onDeleteMedicineEntryClick: (MedicineEntry) -> Unit,
+  onSyncMasterMedicinesClick: () -> Unit = {},
+  onCreateMedicineCatalogClick: () -> Unit = {},
+  onEditMedicineCatalogClick: (MedicineCatalogItem) -> Unit = {},
+  onDeleteMedicineCatalogClick: (MedicineCatalogItem) -> Unit = {},
+  onIssueMedicineCatalogClick: (MedicineCatalogItem) -> Unit = {},
   onAddFeedTransferClick: () -> Unit,
   onEditFeedTransferClick: (FeedTransfer) -> Unit,
   onDeleteFeedTransferClick: (FeedTransfer) -> Unit,
@@ -168,6 +179,9 @@ fun SettlementsScreen(
   var ledgerBatchMenuExpanded by remember { mutableStateOf(false) }
   var claimFilter by remember { mutableStateOf<ClaimStatus?>(null) }
   var showDailyKmLogsMode by remember { mutableStateOf(false) }
+  var showMedicineCatalogMode by remember { mutableStateOf(true) }
+  var medicineCatalogSearch by remember { mutableStateOf("") }
+  var medicineCategoryFilter by remember { mutableStateOf<String?>(null) }
 
   Column(modifier = modifier.fillMaxSize()) {
     Row(
@@ -629,6 +643,7 @@ fun SettlementsScreen(
         }
         val totalBags = filteredDispatches.sumOf { it.bagsCount }
         val totalWeightKg = filteredDispatches.sumOf { it.weightKg }
+        val totalFeedAmount = filteredDispatches.sumOf { it.resolvedTotalAmount }
 
         LazyColumn(
           modifier = Modifier.fillMaxSize(),
@@ -644,7 +659,12 @@ fun SettlementsScreen(
               Column(modifier = Modifier.weight(1f)) {
                 Text("Feed Dispatch Ledger", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                  text = "${filteredDispatches.size} dispatches • $totalBags bags • ${formatDecimal(totalWeightKg, 0)} kg",
+                  text = listOfNotNull(
+                    "${filteredDispatches.size} dispatches",
+                    "$totalBags bags",
+                    "${formatDecimal(totalWeightKg, 0)} kg",
+                    if (totalFeedAmount > 0.0) formatCurrency(totalFeedAmount) else null,
+                  ).joinToString(" • "),
                   style = MaterialTheme.typography.bodySmall,
                   color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -739,8 +759,25 @@ fun SettlementsScreen(
                   }
                   Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(horizontalAlignment = Alignment.End) {
-                      Text("${dispatch.bagsCount} bags", style = MonoMetricMedium, color = MaterialTheme.colorScheme.primary)
-                      Text("${formatDecimal(dispatch.weightKg, 0)} kg", style = MonoMetricSmall)
+                      if (dispatch.resolvedTotalAmount > 0.0) {
+                        Text(
+                          formatCurrency(dispatch.resolvedTotalAmount),
+                          style = MonoMetricMedium,
+                          color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                          buildString {
+                            append("${dispatch.bagsCount}b / ${formatDecimal(dispatch.weightKg, 0)}kg")
+                            if (dispatch.unitRate > 0.0) {
+                              append(" @ ${formatCurrency(dispatch.unitRate)}${dispatch.rateBasisEnum.unitSuffix}")
+                            }
+                          },
+                          style = MonoMetricSmall,
+                        )
+                      } else {
+                        Text("${dispatch.bagsCount} bags", style = MonoMetricMedium, color = MaterialTheme.colorScheme.primary)
+                        Text("${formatDecimal(dispatch.weightKg, 0)} kg", style = MonoMetricSmall)
+                      }
                     }
                     if (canEditOrDelete) {
                       IconButton(onClick = { onEditFeedDispatchClick(dispatch) }) {
@@ -765,6 +802,14 @@ fun SettlementsScreen(
 
       SettlementHubTab.MEDICINE_ENTRY -> {
         val totalMedicineSpend = medicineEntries.sumOf { it.totalCost }
+        val filteredCatalog = remember(medicinesCatalog, medicineCatalogSearch, medicineCategoryFilter) {
+          val byCategory = if (medicineCategoryFilter == null) {
+            medicinesCatalog
+          } else {
+            medicinesCatalog.filter { it.category == medicineCategoryFilter }
+          }
+          filterAndRankMedicineCatalog(byCategory, medicineCatalogSearch)
+        }
         LazyColumn(
           modifier = Modifier.fillMaxSize(),
           contentPadding = PaddingValues(16.dp),
@@ -772,85 +817,286 @@ fun SettlementsScreen(
         ) {
           item {
             Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.SpaceBetween,
-              verticalAlignment = Alignment.CenterVertically,
+              modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-              Column(modifier = Modifier.weight(1f)) {
-                Text("Medicine Entry Ledger", style = MaterialTheme.typography.headlineSmall)
-                Text(
-                  text = "${medicineEntries.size} entries • Total ${formatCurrency(totalMedicineSpend)}",
-                  style = MaterialTheme.typography.bodySmall,
-                  color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-              }
-              if (canEditOrDelete) {
-                Button(
-                  onClick = onAddMedicineEntryClick,
-                  modifier = Modifier.testTag("hub_add_medicine_btn"),
-                ) {
-                  Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                  Spacer(modifier = Modifier.size(4.dp))
-                  Text("Medicine")
+              FilterChip(
+                selected = showMedicineCatalogMode,
+                onClick = { showMedicineCatalogMode = true },
+                label = { Text("Medicine List (${medicinesCatalog.size})") },
+                modifier = Modifier.testTag("medicine_catalog_mode_chip"),
+              )
+              FilterChip(
+                selected = !showMedicineCatalogMode,
+                onClick = { showMedicineCatalogMode = false },
+                label = { Text("Issue Ledger (${medicineEntries.size})") },
+                modifier = Modifier.testTag("medicine_ledger_mode_chip"),
+              )
+            }
+          }
+
+          if (showMedicineCatalogMode) {
+            item {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Column(modifier = Modifier.weight(1f)) {
+                  Text("Medicine & Vaccine List", style = MaterialTheme.typography.headlineSmall)
+                  Text(
+                    text = "${filteredCatalog.size} of ${medicinesCatalog.size} master items",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
+                if (canEditOrDelete) {
+                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                      onClick = onSyncMasterMedicinesClick,
+                      modifier = Modifier.testTag("hub_sync_medicine_catalog_btn"),
+                    ) {
+                      Icon(Icons.Rounded.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
+                      Spacer(modifier = Modifier.size(4.dp))
+                      Text("Sync")
+                    }
+                    Button(
+                      onClick = onCreateMedicineCatalogClick,
+                      modifier = Modifier.testTag("hub_create_medicine_catalog_btn"),
+                    ) {
+                      Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                      Spacer(modifier = Modifier.size(4.dp))
+                      Text("Create")
+                    }
+                  }
                 }
               }
             }
-          }
-          if (medicineEntries.isEmpty()) {
+
             item {
-              EmptyStateCard(
-                icon = Icons.Rounded.Medication,
-                title = "No Medicine Entries",
-                description = "Record vaccines, antibiotics, supplements, and sanitizers issued to batches for automatic GC cost tracking.",
-              )
-            }
-          } else {
-            items(medicineEntries, key = { "med_${it.id}" }) { med ->
-              Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.medium,
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-              ) {
-                Row(
-                  modifier = Modifier.fillMaxWidth().padding(14.dp),
-                  horizontalArrangement = Arrangement.SpaceBetween,
-                  verticalAlignment = Alignment.CenterVertically,
-                ) {
-                  Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("${med.medicineName} • ${med.category}", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                      "${med.farmCode} (${med.batchCode}) • ${med.invoiceOrSlipNo} • ${formatEpochDay(med.entryEpochDay)}",
-                      style = MaterialTheme.typography.bodySmall,
-                      color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (med.dosageOrQty.isNotBlank() || med.remarks.isNotBlank()) {
-                      Text(
-                        listOfNotNull(
-                          med.dosageOrQty.takeIf { it.isNotBlank() },
-                          med.remarks.takeIf { it.isNotBlank() },
-                        ).joinToString(" • "),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                      )
+              OutlinedTextField(
+                value = medicineCatalogSearch,
+                onValueChange = { medicineCatalogSearch = it },
+                placeholder = { Text("Search code or name (e.g., M008, V001, MENTOFIN)...") },
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                trailingIcon = {
+                  if (medicineCatalogSearch.isNotEmpty()) {
+                    IconButton(onClick = { medicineCatalogSearch = "" }) {
+                      Icon(Icons.Rounded.Close, contentDescription = "Clear medicine list search")
                     }
                   }
-                  Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                      text = formatCurrency(med.totalCost),
-                      style = MonoMetricMedium,
-                      color = MaterialTheme.colorScheme.primary,
-                    )
-                    if (canEditOrDelete) {
-                      IconButton(onClick = { onEditMedicineEntryClick(med) }) {
-                        Icon(Icons.Rounded.Edit, contentDescription = "Edit medicine entry", modifier = Modifier.size(18.dp))
-                      }
-                      IconButton(onClick = { onDeleteMedicineEntryClick(med) }) {
-                        Icon(
-                          Icons.Rounded.DeleteOutline,
-                          contentDescription = "Delete medicine entry",
-                          tint = MaterialTheme.colorScheme.error,
-                          modifier = Modifier.size(18.dp),
+                },
+                singleLine = true,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.fillMaxWidth().testTag("medicine_catalog_list_search"),
+              )
+            }
+
+            item {
+              Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                FilterChip(
+                  selected = medicineCategoryFilter == null,
+                  onClick = { medicineCategoryFilter = null },
+                  label = { Text("All (${medicinesCatalog.size})") },
+                )
+                MedicineCategory.options.forEach { cat ->
+                  val count = medicinesCatalog.count { it.category == cat }
+                  FilterChip(
+                    selected = medicineCategoryFilter == cat,
+                    onClick = { medicineCategoryFilter = cat },
+                    label = { Text("$cat ($count)") },
+                  )
+                }
+              }
+            }
+
+            if (filteredCatalog.isEmpty()) {
+              item {
+                EmptyStateCard(
+                  icon = Icons.Rounded.Medication,
+                  title = "No Medicine Items Found",
+                  description = "Tap Create to add a medicine/vaccine item with Code, Packing, Unit, Rate & Per Kg/Ltr, or tap Sync to import the master list.",
+                )
+              }
+            } else {
+              items(filteredCatalog, key = { "med_cat_${it.id}" }) { item ->
+                Card(
+                  modifier = Modifier.fillMaxWidth(),
+                  shape = MaterialTheme.shapes.medium,
+                  colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                ) {
+                  Column(
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                  ) {
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      horizontalArrangement = Arrangement.SpaceBetween,
+                      verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                      Row(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                      ) {
+                        val isVaccineBadge = item.medicineCode.startsWith("V", ignoreCase = true)
+                        StatusPill(
+                          text = item.medicineCode,
+                          background = if (isVaccineBadge) {
+                            MaterialTheme.colorScheme.tertiaryContainer
+                          } else {
+                            MaterialTheme.colorScheme.primaryContainer
+                          },
+                          foreground = if (isVaccineBadge) {
+                            MaterialTheme.colorScheme.onTertiaryContainer
+                          } else {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                          },
                         )
+                        Column(modifier = Modifier.weight(1f)) {
+                          Text(
+                            text = item.medicineName,
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                          )
+                          Text(
+                            text = item.category,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          )
+                        }
+                      }
+                      if (canEditOrDelete) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                          OutlinedButton(
+                            onClick = { onIssueMedicineCatalogClick(item) },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                          ) {
+                            Text("Issue", style = MaterialTheme.typography.labelMedium)
+                          }
+                          IconButton(onClick = { onEditMedicineCatalogClick(item) }) {
+                            Icon(Icons.Rounded.Edit, contentDescription = "Edit medicine item", modifier = Modifier.size(18.dp))
+                          }
+                          IconButton(onClick = { onDeleteMedicineCatalogClick(item) }) {
+                            Icon(
+                              Icons.Rounded.DeleteOutline,
+                              contentDescription = "Delete medicine item",
+                              tint = MaterialTheme.colorScheme.error,
+                              modifier = Modifier.size(18.dp),
+                            )
+                          }
+                        }
+                      }
+                    }
+
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                      Column {
+                        Text("PACKING", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${item.packingDisplay} ${item.unitDisplay}", style = MonoMetricSmall)
+                      }
+                      Column(horizontalAlignment = Alignment.End) {
+                        Text("RATE", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(item.rateDisplay, style = MonoMetricSmall, color = MaterialTheme.colorScheme.primary)
+                      }
+                      Column(horizontalAlignment = Alignment.End) {
+                        Text("PER KG/LTR", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(item.perKgOrLtrDisplay, style = MonoMetricSmall)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } else {
+            item {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Column(modifier = Modifier.weight(1f)) {
+                  Text("Medicine Entry Ledger", style = MaterialTheme.typography.headlineSmall)
+                  Text(
+                    text = "${medicineEntries.size} entries • Total ${formatCurrency(totalMedicineSpend)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
+                if (canEditOrDelete) {
+                  Button(
+                    onClick = onAddMedicineEntryClick,
+                    modifier = Modifier.testTag("hub_add_medicine_btn"),
+                  ) {
+                    Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.size(4.dp))
+                    Text("Medicine")
+                  }
+                }
+              }
+            }
+            if (medicineEntries.isEmpty()) {
+              item {
+                EmptyStateCard(
+                  icon = Icons.Rounded.Medication,
+                  title = "No Medicine Entries",
+                  description = "Record vaccines, antibiotics, supplements, and sanitizers issued to batches for automatic GC cost tracking.",
+                )
+              }
+            } else {
+              items(medicineEntries, key = { "med_${it.id}" }) { med ->
+                Card(
+                  modifier = Modifier.fillMaxWidth(),
+                  shape = MaterialTheme.shapes.medium,
+                  colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                ) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                      Text("${med.medicineName} • ${med.category}", style = MaterialTheme.typography.titleSmall)
+                      Text(
+                        "${med.farmCode} (${med.batchCode}) • ${med.invoiceOrSlipNo} • ${formatEpochDay(med.entryEpochDay)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      )
+                      if (med.dosageOrQty.isNotBlank() || med.remarks.isNotBlank()) {
+                        Text(
+                          listOfNotNull(
+                            med.dosageOrQty.takeIf { it.isNotBlank() },
+                            med.remarks.takeIf { it.isNotBlank() },
+                          ).joinToString(" • "),
+                          style = MaterialTheme.typography.labelSmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                      }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                      Text(
+                        text = formatCurrency(med.totalCost),
+                        style = MonoMetricMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                      )
+                      if (canEditOrDelete) {
+                        IconButton(onClick = { onEditMedicineEntryClick(med) }) {
+                          Icon(Icons.Rounded.Edit, contentDescription = "Edit medicine entry", modifier = Modifier.size(18.dp))
+                        }
+                        IconButton(onClick = { onDeleteMedicineEntryClick(med) }) {
+                          Icon(
+                            Icons.Rounded.DeleteOutline,
+                            contentDescription = "Delete medicine entry",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp),
+                          )
+                        }
                       }
                     }
                   }

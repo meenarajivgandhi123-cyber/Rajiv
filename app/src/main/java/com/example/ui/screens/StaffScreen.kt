@@ -13,12 +13,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Email
 import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -31,6 +35,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -44,11 +49,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.example.data.model.DEFAULT_SUPER_ADMIN_EMAIL
 import com.example.data.model.OperatorAccount
 import com.example.data.model.OperatorRole
+import com.example.data.model.isValidMappedEmail
+import com.example.data.model.normalizeMappedEmail
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.StatusPill
 import com.example.ui.theme.LocalStatusColors
@@ -59,12 +69,14 @@ import com.example.ui.theme.MonoMetricMedium
 fun StaffScreen(
   operators: List<OperatorAccount>,
   currentOperatorId: String,
+  workspaceEmail: String,
   onCreateOperator: (
     empCode: String,
     fullName: String,
     role: OperatorRole,
     password: String,
     allowPreviousDateEntry: Boolean,
+    mappedEmail: String,
   ) -> Unit,
   onUpdateOperator: (
     operatorId: String,
@@ -73,6 +85,7 @@ fun StaffScreen(
     isActive: Boolean,
     newPassword: String?,
     allowPreviousDateEntry: Boolean,
+    mappedEmail: String,
   ) -> Unit,
   onDeleteOperator: (OperatorAccount) -> Unit,
   modifier: Modifier = Modifier,
@@ -93,11 +106,11 @@ fun StaffScreen(
       ) {
         Column(modifier = Modifier.weight(1f)) {
           Text(
-            text = "Staff & Previous Date Permissions",
+            text = "Staff & Email Permissions",
             style = MaterialTheme.typography.headlineSmall,
           )
           Text(
-            text = "Manage Super Admin, Admin, User logins & backdated entry permissions",
+            text = "Manage Super Admin, Admin, User logins, mapped Google Emails & backdated entry permissions",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
@@ -113,12 +126,58 @@ fun StaffScreen(
       }
     }
 
+    item {
+      val cleanWorkspaceEmail = normalizeMappedEmail(workspaceEmail)
+      Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+        modifier = Modifier.fillMaxWidth(),
+      ) {
+        Row(
+          modifier = Modifier.padding(14.dp),
+          horizontalArrangement = Arrangement.spacedBy(12.dp),
+          verticalAlignment = Alignment.Top,
+        ) {
+          Icon(
+            imageVector = Icons.Rounded.VerifiedUser,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(22.dp),
+          )
+          Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+              text = "App Email ID Mapping for Super Admin & Staff",
+              style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+              color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+              text = "Default Super Admin Email: $DEFAULT_SUPER_ADMIN_EMAIL",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.primary,
+            )
+            if (cleanWorkspaceEmail.isNotBlank()) {
+              Text(
+                text = "Current Google Sign-In: $cleanWorkspaceEmail",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+            Text(
+              text = "Any active account with a Mapped Google Email ID auto-grants that role's permissions when signed into Google with that email.",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+        }
+      }
+    }
+
     if (operators.isEmpty()) {
       item {
         EmptyStateCard(
           icon = Icons.Rounded.Security,
           title = "No Staff Accounts",
-          description = "Create Admin and User employee codes for field supervisors and office staff.",
+          description = "Create Super Admin, Admin, and User employee codes or map Google Email IDs.",
           actionLabel = "Add Staff",
           onAction = { showCreateDialog = true },
         )
@@ -127,6 +186,7 @@ fun StaffScreen(
       items(operators, key = { it.id }) { op ->
         val statusColors = LocalStatusColors.current
         val isSelf = op.id == currentOperatorId
+        val isPrimarySuperAdminEmail = op.normalizedMappedEmail == DEFAULT_SUPER_ADMIN_EMAIL
         Card(
           modifier = Modifier.fillMaxWidth(),
           shape = MaterialTheme.shapes.medium,
@@ -173,6 +233,13 @@ fun StaffScreen(
                     foreground = MaterialTheme.colorScheme.onTertiaryContainer,
                   )
                 }
+                if (isPrimarySuperAdminEmail) {
+                  StatusPill(
+                    text = "Primary Super Admin Email",
+                    background = MaterialTheme.colorScheme.primaryContainer,
+                    foreground = MaterialTheme.colorScheme.onPrimaryContainer,
+                  )
+                }
                 if (!op.isActive) {
                   StatusPill(
                     text = "Disabled",
@@ -185,6 +252,24 @@ fun StaffScreen(
                 text = op.fullName + if (isSelf) " (You)" else "",
                 style = MaterialTheme.typography.titleMedium,
               )
+              if (op.mappedEmail.isNotBlank()) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                  Icon(
+                    imageVector = Icons.Rounded.Email,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(14.dp),
+                  )
+                  Text(
+                    text = "Mapped Email: ${op.mappedEmail}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                  )
+                }
+              }
               Text(
                 text = op.roleEnum.subtitle,
                 style = MaterialTheme.typography.bodySmall,
@@ -220,10 +305,11 @@ fun StaffScreen(
   if (showCreateDialog) {
     OperatorFormDialog(
       existing = null,
+      workspaceEmail = workspaceEmail,
       onDismiss = { showCreateDialog = false },
-      onSave = { code, name, role, password, _, allowPrev ->
+      onSave = { code, name, role, password, _, allowPrev, mappedEmail ->
         showCreateDialog = false
-        onCreateOperator(code, name, role, password, allowPrev)
+        onCreateOperator(code, name, role, password, allowPrev, mappedEmail)
       },
     )
   }
@@ -231,10 +317,19 @@ fun StaffScreen(
   editingOperator?.let { target ->
     OperatorFormDialog(
       existing = target,
+      workspaceEmail = workspaceEmail,
       onDismiss = { editingOperator = null },
-      onSave = { _, name, role, newPassword, isActive, allowPrev ->
+      onSave = { _, name, role, newPassword, isActive, allowPrev, mappedEmail ->
         editingOperator = null
-        onUpdateOperator(target.id, name, role, isActive, newPassword.ifBlank { null }, allowPrev)
+        onUpdateOperator(
+          target.id,
+          name,
+          role,
+          isActive,
+          newPassword.ifBlank { null },
+          allowPrev,
+          mappedEmail,
+        )
       },
     )
   }
@@ -244,6 +339,7 @@ fun StaffScreen(
 @Composable
 private fun OperatorFormDialog(
   existing: OperatorAccount?,
+  workspaceEmail: String,
   onDismiss: () -> Unit,
   onSave: (
     empCode: String,
@@ -252,6 +348,7 @@ private fun OperatorFormDialog(
     password: String,
     isActive: Boolean,
     allowPreviousDateEntry: Boolean,
+    mappedEmail: String,
   ) -> Unit,
 ) {
   var empCode by remember { mutableStateOf(existing?.empCode ?: "") }
@@ -260,10 +357,14 @@ private fun OperatorFormDialog(
   var password by remember { mutableStateOf("") }
   var isActive by remember { mutableStateOf(existing?.isActive ?: true) }
   var allowPrevDate by remember { mutableStateOf(existing?.allowPreviousDateEntry ?: false) }
+  var mappedEmail by remember { mutableStateOf(existing?.mappedEmail ?: "") }
   var roleExpanded by remember { mutableStateOf(false) }
 
+  val cleanWorkspaceEmail = normalizeMappedEmail(workspaceEmail)
+  val emailValid = isValidMappedEmail(mappedEmail)
   val isValid = (existing != null || empCode.trim().length >= 2) &&
     fullName.isNotBlank() &&
+    emailValid &&
     (existing != null && password.isBlank() || password.length >= 4)
 
   AlertDialog(
@@ -272,7 +373,10 @@ private fun OperatorFormDialog(
       Text(if (existing == null) "Create Employee Account" else "Edit ${existing.empCode}")
     },
     text = {
-      Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+      Column(
+        modifier = Modifier.verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+      ) {
         if (existing == null) {
           OutlinedTextField(
             value = empCode,
@@ -321,6 +425,44 @@ private fun OperatorFormDialog(
           }
         }
         OutlinedTextField(
+          value = mappedEmail,
+          onValueChange = { mappedEmail = it.trim().lowercase() },
+          label = { Text("Mapped Google Email ID (Optional)") },
+          placeholder = { Text(DEFAULT_SUPER_ADMIN_EMAIL) },
+          leadingIcon = { Icon(Icons.Rounded.Email, contentDescription = null) },
+          isError = !emailValid,
+          supportingText = {
+            if (!emailValid) {
+              Text("Enter a valid Google Email ID (e.g., name@gmail.com)")
+            } else {
+              Text("Auto-grants ${role.label} permission when signed in with this Email ID")
+            }
+          },
+          singleLine = true,
+          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+          modifier = Modifier.fillMaxWidth().testTag("staff_mapped_email_input"),
+        )
+        if (cleanWorkspaceEmail.contains("@") || mappedEmail.isNotBlank()) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            if (cleanWorkspaceEmail.contains("@") && normalizeMappedEmail(mappedEmail) != cleanWorkspaceEmail) {
+              OutlinedButton(
+                onClick = { mappedEmail = cleanWorkspaceEmail },
+                modifier = Modifier.weight(1f),
+              ) {
+                Text("Use Signed-In Email")
+              }
+            }
+            if (mappedEmail.isNotBlank()) {
+              TextButton(onClick = { mappedEmail = "" }) {
+                Text("Clear Email")
+              }
+            }
+          }
+        }
+        OutlinedTextField(
           value = password,
           onValueChange = { password = it },
           label = { Text(if (existing == null) "Password (min 4 chars) *" else "New Password (leave blank to keep)") },
@@ -335,7 +477,7 @@ private fun OperatorFormDialog(
             modifier = Modifier.fillMaxWidth(),
           ) {
             Text(
-              text = "Super Admin always has Previous Date Entry access.",
+              text = "Super Admin always has Previous Date Entry access and full App permissions.",
               style = MaterialTheme.typography.bodySmall,
               modifier = Modifier.padding(10.dp),
             )
@@ -384,6 +526,7 @@ private fun OperatorFormDialog(
             password,
             isActive,
             role == OperatorRole.SUPER_ADMIN || allowPrevDate,
+            normalizeMappedEmail(mappedEmail),
           )
         },
         modifier = Modifier.testTag("save_staff_button"),

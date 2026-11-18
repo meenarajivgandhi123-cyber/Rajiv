@@ -1,13 +1,21 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -15,23 +23,29 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.model.AccountTypeOption
 import com.example.data.model.DailyLog
@@ -551,6 +565,39 @@ fun CancelFarmDialog(
   )
 }
 
+fun filterAndRankFarmersForBatchCreation(farmers: List<Farmer>, query: String): List<Farmer> {
+  val trimmed = query.trim()
+  if (trimmed.isEmpty()) return farmers
+  val normQuery = trimmed.replace(" ", "").uppercase()
+  val upperQuery = trimmed.uppercase()
+  return farmers
+    .mapNotNull { farmer ->
+      val codeUpper = farmer.farmCode.trim().uppercase()
+      val codeNorm = codeUpper.replace(" ", "")
+      val rank = when {
+        codeNorm == normQuery -> 0
+        codeNorm.startsWith(normQuery) -> 1
+        codeNorm.contains(normQuery) -> 2
+        farmer.displayFarmName.uppercase().startsWith(upperQuery) -> 3
+        farmer.displayFarmName.uppercase().contains(upperQuery) -> 4
+        farmer.farmerName.uppercase().contains(upperQuery) -> 5
+        farmer.zoneName.uppercase().contains(upperQuery) ||
+          farmer.village.uppercase().contains(upperQuery) ||
+          farmer.region.uppercase().contains(upperQuery) -> 6
+        else -> return@mapNotNull null
+      }
+      rank to farmer
+    }
+    .sortedWith(compareBy({ it.first }, { it.second.farmCode.uppercase() }))
+    .map { it.second }
+}
+
+fun findExactFarmCodeMatch(farmers: List<Farmer>, query: String): Farmer? {
+  val normQuery = query.trim().replace(" ", "").uppercase()
+  if (normQuery.isEmpty()) return null
+  return farmers.firstOrNull { it.farmCode.trim().replace(" ", "").uppercase() == normQuery }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateBatchDialog(
@@ -559,6 +606,7 @@ fun CreateBatchDialog(
   canSelectPreviousDate: Boolean = false,
   preselectedFarmer: Farmer? = null,
   existingBatch: FlockBatch? = null,
+  allFarmers: List<Farmer> = eligibleFarmers,
   onDismiss: () -> Unit,
   onCreateBatch: (
     farmer: Farmer?,
@@ -579,6 +627,7 @@ fun CreateBatchDialog(
   ) -> Unit,
 ) {
   var selectedFarmer by remember { mutableStateOf(preselectedFarmer ?: eligibleFarmers.firstOrNull()) }
+  var farmSearchQuery by remember { mutableStateOf("") }
   var farmerDropdownExpanded by remember { mutableStateOf(false) }
   var batchCode by remember { mutableStateOf(existingBatch?.batchCode ?: "BCH-${(1000..9999).random()}") }
   var farmName by remember {
@@ -616,6 +665,28 @@ fun CreateBatchDialog(
   var standardFcrText by remember { mutableStateOf((existingBatch?.standardFcr ?: 1.62).toString()) }
   var rateText by remember { mutableStateOf((existingBatch?.growingRatePerKg ?: selectedFarmer?.growingRatePerKg ?: 9.0).toString()) }
 
+  val filteredEligibleFarmers = remember(eligibleFarmers, farmSearchQuery) {
+    filterAndRankFarmersForBatchCreation(eligibleFarmers, farmSearchQuery)
+  }
+  val nonEmptySearchMatch = remember(allFarmers, eligibleFarmers, farmSearchQuery, filteredEligibleFarmers) {
+    if (farmSearchQuery.isBlank() || filteredEligibleFarmers.isNotEmpty()) {
+      null
+    } else {
+      val eligibleIds = eligibleFarmers.map { it.id }.toSet()
+      filterAndRankFarmersForBatchCreation(allFarmers, farmSearchQuery)
+        .firstOrNull { it.id !in eligibleIds }
+    }
+  }
+
+  fun applySelectedFarmer(farmer: Farmer) {
+    selectedFarmer = farmer
+    farmName = farmer.displayFarmName
+    region = farmer.region
+    zoneName = farmer.zoneName
+    chicksText = farmer.shedCapacity.toString()
+    rateText = farmer.growingRatePerKg.toString()
+  }
+
   val computedAutoAge = max(0L, todayEpochDay - placementEpochDay)
   val isEdit = existingBatch != null
   val dateValid = !canSelectPreviousDate || (parseDdMmYyyy(hatchDateText)?.let { it <= todayEpochDay } == true)
@@ -650,6 +721,133 @@ fun CreateBatchDialog(
           verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
           if (!isEdit) {
+            OutlinedTextField(
+              value = farmSearchQuery,
+              onValueChange = { raw ->
+                farmSearchQuery = raw
+                findExactFarmCodeMatch(eligibleFarmers, raw)?.let { exactMatch ->
+                  applySelectedFarmer(exactMatch)
+                }
+              },
+              label = { Text("Search Farm Code / Name") },
+              placeholder = { Text("e.g., F046, UPF005, UKF124") },
+              leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+              trailingIcon = {
+                if (farmSearchQuery.isNotEmpty()) {
+                  IconButton(
+                    onClick = { farmSearchQuery = "" },
+                    modifier = Modifier.minimumInteractiveComponentSize().testTag("clear_batch_farm_search"),
+                  ) {
+                    Icon(Icons.Rounded.Close, contentDescription = "Clear farm search")
+                  }
+                }
+              },
+              supportingText = if (farmSearchQuery.isNotBlank()) {
+                {
+                  Text(
+                    if (filteredEligibleFarmers.isEmpty()) "0 matching empty farms"
+                    else "${filteredEligibleFarmers.size} matching empty farm(s)"
+                  )
+                }
+              } else null,
+              singleLine = true,
+              keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("batch_farm_code_search_input"),
+            )
+
+            if (farmSearchQuery.isNotBlank()) {
+              if (filteredEligibleFarmers.isEmpty()) {
+                Surface(
+                  shape = MaterialTheme.shapes.small,
+                  color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f),
+                  modifier = Modifier.fillMaxWidth(),
+                ) {
+                  Text(
+                    text = nonEmptySearchMatch?.let {
+                      "Farm ${it.farmCode} (${it.displayFarmName}) is currently ${it.statusEnum.label} and cannot receive a new batch."
+                    } ?: "No Empty Farm matches \"$farmSearchQuery\".",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(10.dp).testTag("batch_farm_search_empty_notice"),
+                  )
+                }
+              } else {
+                val visibleMatches = filteredEligibleFarmers.take(25)
+                Surface(
+                  shape = MaterialTheme.shapes.small,
+                  color = MaterialTheme.colorScheme.surface,
+                  border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 176.dp)
+                    .testTag("batch_farm_search_results"),
+                ) {
+                  Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    visibleMatches.forEachIndexed { index, farmer ->
+                      val isSelectedMatch = selectedFarmer?.id == farmer.id
+                      Row(
+                        modifier = Modifier
+                          .fillMaxWidth()
+                          .minimumInteractiveComponentSize()
+                          .clickable {
+                            applySelectedFarmer(farmer)
+                            farmerDropdownExpanded = false
+                          }
+                          .padding(horizontal = 10.dp, vertical = 8.dp)
+                          .testTag("batch_farm_match_${farmer.farmCode}"),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                      ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                          Text(
+                            text = "${farmer.farmCode} • ${farmer.displayFarmName}",
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                              fontWeight = if (isSelectedMatch) FontWeight.Bold else FontWeight.Medium,
+                            ),
+                            color = if (isSelectedMatch) {
+                              MaterialTheme.colorScheme.primary
+                            } else {
+                              MaterialTheme.colorScheme.onSurface
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                          )
+                          Text(
+                            text = "${farmer.zoneName.ifBlank { farmer.region }} • ${farmer.shedCapacity} cap",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                          )
+                        }
+                        if (isSelectedMatch) {
+                          Icon(
+                            imageVector = Icons.Rounded.CheckCircle,
+                            contentDescription = "Selected farm",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp),
+                          )
+                        }
+                      }
+                      if (index < visibleMatches.lastIndex) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                      }
+                    }
+                    if (filteredEligibleFarmers.size > 25) {
+                      Text(
+                        text = "Showing top 25 of ${filteredEligibleFarmers.size} — type full Farm Code to narrow.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                      )
+                    }
+                  }
+                }
+              }
+            }
+
             ExposedDropdownMenuBox(
               expanded = farmerDropdownExpanded,
               onExpandedChange = { farmerDropdownExpanded = it },
@@ -658,29 +856,51 @@ fun CreateBatchDialog(
                 value = selectedFarmer?.let { "${it.farmCode} • ${it.displayFarmName}" } ?: "",
                 onValueChange = {},
                 readOnly = true,
-                label = { Text("Select Empty Farm *") },
+                label = {
+                  Text(
+                    if (farmSearchQuery.isBlank()) "Select Empty Farm (${eligibleFarmers.size}) *"
+                    else "Selected Farm (${filteredEligibleFarmers.size} matches) *"
+                  )
+                },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = farmerDropdownExpanded) },
                 modifier = Modifier
                   .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                  .fillMaxWidth(),
+                  .fillMaxWidth()
+                  .testTag("batch_farm_dropdown"),
               )
               ExposedDropdownMenu(
                 expanded = farmerDropdownExpanded,
                 onDismissRequest = { farmerDropdownExpanded = false },
               ) {
-                eligibleFarmers.forEach { farmer ->
+                val dropdownFarmers = filteredEligibleFarmers.take(50)
+                if (dropdownFarmers.isEmpty()) {
                   DropdownMenuItem(
-                    text = { Text("${farmer.farmCode} • ${farmer.displayFarmName} (${farmer.shedCapacity} cap)") },
-                    onClick = {
-                      selectedFarmer = farmer
-                      farmName = farmer.displayFarmName
-                      region = farmer.region
-                      zoneName = farmer.zoneName
-                      chicksText = farmer.shedCapacity.toString()
-                      rateText = farmer.growingRatePerKg.toString()
-                      farmerDropdownExpanded = false
-                    },
+                    text = { Text("No matching empty farms") },
+                    onClick = { farmerDropdownExpanded = false },
                   )
+                } else {
+                  dropdownFarmers.forEach { farmer ->
+                    DropdownMenuItem(
+                      text = { Text("${farmer.farmCode} • ${farmer.displayFarmName} (${farmer.shedCapacity} cap)") },
+                      onClick = {
+                        applySelectedFarmer(farmer)
+                        farmerDropdownExpanded = false
+                      },
+                    )
+                  }
+                  if (filteredEligibleFarmers.size > 50) {
+                    DropdownMenuItem(
+                      text = {
+                        Text(
+                          "Showing first 50 of ${filteredEligibleFarmers.size} — use Farm Code search above",
+                          style = MaterialTheme.typography.labelSmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                      },
+                      enabled = false,
+                      onClick = {},
+                    )
+                  }
                 }
               }
             }

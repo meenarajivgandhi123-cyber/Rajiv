@@ -6,13 +6,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.catalog.MasterBatchCatalog
 import com.example.data.catalog.MasterFarmerCatalog
+import com.example.data.catalog.MasterMedicineCatalog
 import com.example.data.model.BatchStatus
 import com.example.data.model.BirdSale
 import com.example.data.model.ClaimStatus
+import com.example.data.model.DEFAULT_SUPER_ADMIN_EMAIL
 import com.example.data.model.DailyLog
 import com.example.data.model.FarmStatus
 import com.example.data.model.Farmer
 import com.example.data.model.FeedDispatch
+import com.example.data.model.FeedRateBasis
 import com.example.data.model.FeedTransfer
 import com.example.data.model.FlockBatch
 import com.example.data.model.GcStatementDetails
@@ -20,11 +23,14 @@ import com.example.data.model.IntegrationZone
 import com.example.data.model.KmClaim
 import com.example.data.model.KmDailyEntry
 import com.example.data.model.KmMonthHelper
+import com.example.data.model.MedicineCatalogItem
 import com.example.data.model.MedicineEntry
 import com.example.data.model.OperatorAccount
 import com.example.data.model.OperatorRole
 import com.example.data.model.PasswordHasher
 import com.example.data.model.SettlementCalculator
+import com.example.data.model.findOperatorForEmailMapping
+import com.example.data.model.normalizeMappedEmail
 import com.example.data.repository.BroilerRepository
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
@@ -82,12 +88,14 @@ sealed interface BroilerDataState {
     val kmEntries: List<KmDailyEntry>,
     val kmClaims: List<KmClaim>,
     val medicineEntries: List<MedicineEntry>,
+    val medicinesCatalog: List<MedicineCatalogItem>,
   ) : BroilerDataState
   data class Error(val message: String) : BroilerDataState
 }
 
 data class BroilerUiControls(
   val activeOperator: OperatorAccount? = null,
+  val manualOperatorLogout: Boolean = false,
   val loginError: String? = null,
   val currentDestination: AppDestination = AppDestination.OVERVIEW,
   val farmFilter: FarmFilter = FarmFilter.ALL,
@@ -119,6 +127,7 @@ private data class OperationsStreams(
   val kmEntries: List<KmDailyEntry>,
   val kmClaims: List<KmClaim>,
   val medicineEntries: List<MedicineEntry>,
+  val medicinesCatalog: List<MedicineCatalogItem>,
 )
 
 class BroilerViewModel(
@@ -151,8 +160,9 @@ class BroilerViewModel(
     repository.observeKmEntries(currentUserId),
     repository.observeKmClaims(currentUserId),
     repository.observeMedicineEntries(currentUserId),
-  ) { kmEntries, kmClaims, medicineEntries ->
-    OperationsStreams(kmEntries, kmClaims, medicineEntries)
+    repository.observeMedicineCatalog(currentUserId),
+  ) { kmEntries, kmClaims, medicineEntries, medicinesCatalog ->
+    OperationsStreams(kmEntries, kmClaims, medicineEntries, medicinesCatalog)
   }
 
   val dataState: StateFlow<BroilerDataState> = combine(
@@ -172,6 +182,7 @@ class BroilerViewModel(
       kmEntries = ops.kmEntries,
       kmClaims = ops.kmClaims,
       medicineEntries = ops.medicineEntries,
+      medicinesCatalog = ops.medicinesCatalog,
     ) as BroilerDataState
   }
     .catch { error ->
@@ -202,18 +213,23 @@ class BroilerViewModel(
 
     catalogSyncJob = viewModelScope.launch {
       try {
-        val (farmerRows, batchRows) = withContext(Dispatchers.IO) {
-          MasterFarmerCatalog.loadFromAssets(appContext) to MasterBatchCatalog.loadFromAssets(appContext)
+        val (farmerRows, batchRows, medicineRows) = withContext(Dispatchers.IO) {
+          Triple(
+            MasterFarmerCatalog.loadFromAssets(appContext),
+            MasterBatchCatalog.loadFromAssets(appContext),
+            MasterMedicineCatalog.loadFromAssets(appContext),
+          )
         }
         val farmerStats = repository.syncMasterFarmersCatalog(farmerRows, backfillExisting = true).getOrThrow()
         val batchStats = repository.syncMasterBatchesCatalog(batchRows, backfillExisting = true).getOrThrow()
+        val medStats = repository.syncMasterMedicinesCatalog(medicineRows, backfillExisting = true).getOrThrow()
         prefs.edit().putBoolean(prefKey, true).apply()
         val totalZones = farmerStats.zonesCreated + batchStats.zonesCreated
         val totalFarms = farmerStats.farmersCreated + batchStats.stubFarmersCreated
-        if (totalFarms > 0 || totalZones > 0 || batchStats.batchesCreated > 0) {
+        if (totalFarms > 0 || totalZones > 0 || batchStats.batchesCreated > 0 || medStats.itemsCreated > 0) {
           _controls.update {
             it.copy(
-              snackbarMessage = "Synced $totalFarms farms, ${batchStats.batchesCreated} flocks & $totalZones zones"
+              snackbarMessage = "Synced $totalFarms farms, ${batchStats.batchesCreated} flocks, ${medStats.itemsCreated} medicines & $totalZones zones"
             )
           }
         }
@@ -265,6 +281,23 @@ class BroilerViewModel(
     }
   }
 
+  fun syncMasterMedicinesNow(context: Context) {
+    requireAdminOrSuperAdmin {
+      val appContext = context.applicationContext
+      runMutation("Synced medicine & vaccine catalog") {
+        val rows = withContext(Dispatchers.IO) {
+          MasterMedicineCatalog.loadFromAssets(appContext)
+        }
+        val stats = repository.syncMasterMedicinesCatalog(rows, backfillExisting = true).getOrThrow()
+        _controls.update {
+          it.copy(
+            snackbarMessage = "Synced ${stats.itemsCreated} new, ${stats.itemsBackfilled} updated medicine items"
+          )
+        }
+      }
+    }
+  }
+
   private fun currentOperator(): OperatorAccount? {
     val selected = _controls.value.activeOperator ?: return null
     val readyOperators = (dataState.value as? BroilerDataState.Ready)?.operators.orEmpty()
@@ -295,6 +328,120 @@ class BroilerViewModel(
       action()
     } else {
       _controls.update { it.copy(snackbarMessage = "Only Super Admin and Admin can update, approve, or delete records.") }
+    }
+  }
+
+  private var autoEmailProvisionJob: Job? = null
+  private var autoEmailProvisionAttempted = false
+
+  fun resolveAutoEmailLogin(
+    workspaceEmail: String?,
+    displayName: String?,
+    operators: List<OperatorAccount>,
+  ) {
+    val current = _controls.value
+    if (current.activeOperator != null || current.manualOperatorLogout) return
+
+    val directMatch = findOperatorForEmailMapping(operators, workspaceEmail)
+    if (directMatch != null) {
+      val dest = if (directMatch.roleEnum == OperatorRole.USER) {
+        AppDestination.DAILY_ENTRY
+      } else {
+        AppDestination.OVERVIEW
+      }
+      _controls.update {
+        it.copy(
+          activeOperator = directMatch,
+          loginError = null,
+          currentDestination = dest,
+          snackbarMessage = "Email mapped: signed in as ${directMatch.roleEnum.label} (${directMatch.empCode})",
+        )
+      }
+      return
+    }
+
+    val cleanEmail = normalizeMappedEmail(workspaceEmail)
+    if (cleanEmail == DEFAULT_SUPER_ADMIN_EMAIL &&
+      !autoEmailProvisionAttempted &&
+      autoEmailProvisionJob?.isActive != true
+    ) {
+      autoEmailProvisionAttempted = true
+      autoEmailProvisionJob = viewModelScope.launch {
+        try {
+          val unmappedSuper = operators.firstOrNull {
+            it.isActive && it.roleEnum == OperatorRole.SUPER_ADMIN && it.mappedEmail.isBlank()
+          }
+          val resolvedOp = if (unmappedSuper != null) {
+            repository.updateOperator(
+              operatorId = unmappedSuper.id,
+              fullName = unmappedSuper.fullName,
+              role = unmappedSuper.roleEnum,
+              isActive = unmappedSuper.isActive,
+              allowPreviousDateEntry = true,
+              mappedEmail = cleanEmail,
+            ).getOrThrow()
+            unmappedSuper.copy(mappedEmail = cleanEmail, allowPreviousDateEntry = true)
+          } else {
+            val code = if (operators.none { it.empCode.equals("SA-001", ignoreCase = true) }) {
+              "SA-001"
+            } else {
+              "SA-EMAIL"
+            }
+            val opName = displayName?.takeIf { it.isNotBlank() } ?: "Meena (Super Admin)"
+            val randomSeedPwd = java.util.UUID.randomUUID().toString()
+            val opId = repository.createOperator(
+              empCode = code,
+              fullName = opName,
+              role = OperatorRole.SUPER_ADMIN,
+              password = randomSeedPwd,
+              allowPreviousDateEntry = true,
+              mappedEmail = cleanEmail,
+            ).getOrThrow()
+            OperatorAccount(
+              id = opId,
+              userId = currentUserId,
+              empCode = code,
+              fullName = opName,
+              role = OperatorRole.SUPER_ADMIN.value,
+              isActive = true,
+              allowPreviousDateEntry = true,
+              mappedEmail = cleanEmail,
+            )
+          }
+          _controls.update {
+            it.copy(
+              activeOperator = resolvedOp,
+              loginError = null,
+              currentDestination = AppDestination.OVERVIEW,
+              snackbarMessage = "Super Admin granted for $cleanEmail (${resolvedOp.empCode})",
+            )
+          }
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          Log.w(TAG, "Auto email Super Admin mapping failed", e)
+        }
+      }
+    }
+  }
+
+  fun loginWithMappedEmail(operator: OperatorAccount) {
+    if (!operator.isActive) {
+      _controls.update { it.copy(loginError = "Account ${operator.empCode} is disabled. Contact Super Admin.") }
+      return
+    }
+    val dest = if (operator.roleEnum == OperatorRole.USER) {
+      AppDestination.DAILY_ENTRY
+    } else {
+      AppDestination.OVERVIEW
+    }
+    _controls.update {
+      it.copy(
+        activeOperator = operator,
+        manualOperatorLogout = false,
+        loginError = null,
+        currentDestination = dest,
+      )
     }
   }
 
@@ -336,6 +483,7 @@ class BroilerViewModel(
     _controls.update {
       it.copy(
         activeOperator = match,
+        manualOperatorLogout = false,
         loginError = null,
         currentDestination = startDestination,
       )
@@ -346,16 +494,19 @@ class BroilerViewModel(
     empCode: String,
     fullName: String,
     password: String,
+    mappedEmail: String = "",
   ) {
     viewModelScope.launch {
       _controls.update { it.copy(isSaving = true, loginError = null) }
       try {
+        val cleanEmail = normalizeMappedEmail(mappedEmail)
         val opId = repository.createOperator(
           empCode = empCode,
           fullName = fullName,
           role = OperatorRole.SUPER_ADMIN,
           password = password,
           allowPreviousDateEntry = true,
+          mappedEmail = cleanEmail,
         ).getOrThrow()
         val created = OperatorAccount(
           id = opId,
@@ -365,11 +516,13 @@ class BroilerViewModel(
           role = OperatorRole.SUPER_ADMIN.value,
           isActive = true,
           allowPreviousDateEntry = true,
+          mappedEmail = cleanEmail,
         )
         _controls.update {
           it.copy(
             isSaving = false,
             activeOperator = created,
+            manualOperatorLogout = false,
             loginError = null,
             currentDestination = AppDestination.OVERVIEW,
             snackbarMessage = "Super Admin ${created.empCode} created & signed in",
@@ -393,6 +546,7 @@ class BroilerViewModel(
     _controls.update {
       it.copy(
         activeOperator = null,
+        manualOperatorLogout = true,
         loginError = null,
         currentDestination = AppDestination.OVERVIEW,
         selectedFarmerId = null,
@@ -411,10 +565,18 @@ class BroilerViewModel(
     role: OperatorRole,
     password: String,
     allowPreviousDateEntry: Boolean,
+    mappedEmail: String = "",
   ) {
     requireSuperAdmin {
       runMutation("Created ${role.label} account ${empCode.trim().uppercase()}") {
-        repository.createOperator(empCode, fullName, role, password, allowPreviousDateEntry).getOrThrow()
+        repository.createOperator(
+          empCode = empCode,
+          fullName = fullName,
+          role = role,
+          password = password,
+          allowPreviousDateEntry = allowPreviousDateEntry,
+          mappedEmail = mappedEmail,
+        ).getOrThrow()
       }
     }
   }
@@ -426,6 +588,7 @@ class BroilerViewModel(
     isActive: Boolean,
     newPassword: String?,
     allowPreviousDateEntry: Boolean,
+    mappedEmail: String? = null,
   ) {
     requireSuperAdmin {
       runMutation("Updated staff account $fullName") {
@@ -436,6 +599,7 @@ class BroilerViewModel(
           isActive = isActive,
           newPassword = newPassword,
           allowPreviousDateEntry = allowPreviousDateEntry,
+          mappedEmail = mappedEmail,
         ).getOrThrow()
       }
     }
@@ -853,6 +1017,9 @@ class BroilerViewModel(
     requestedDispatchEpochDay: Long? = null,
     vehicleNo: String = "",
     remarks: String = "",
+    unitRate: Double = 0.0,
+    rateBasis: String = FeedRateBasis.PER_BAG.value,
+    totalAmount: Double? = null,
   ) {
     val dispatchDay = resolveEffectiveEpochDay(requestedDispatchEpochDay)
     runMutation("Dispatched $bagsCount bags ($feedType) to ${batch.farmCode}") {
@@ -865,6 +1032,9 @@ class BroilerViewModel(
         dispatchEpochDay = dispatchDay,
         vehicleNo = vehicleNo,
         remarks = remarks,
+        unitRate = unitRate,
+        rateBasis = rateBasis,
+        totalAmount = totalAmount,
       ).getOrThrow()
     }
   }
@@ -878,6 +1048,9 @@ class BroilerViewModel(
     vehicleNo: String = dispatch.vehicleNo,
     remarks: String = dispatch.remarks,
     requestedEpochDay: Long? = null,
+    unitRate: Double = dispatch.unitRate,
+    rateBasis: String = dispatch.rateBasis,
+    totalAmount: Double? = null,
   ) {
     requireAdminOrSuperAdmin {
       val effectiveDay = if (currentOperator()?.canSelectPreviousDate == true && requestedEpochDay != null) {
@@ -895,6 +1068,9 @@ class BroilerViewModel(
           vehicleNo = vehicleNo,
           remarks = remarks,
           dispatchEpochDay = effectiveDay,
+          unitRate = unitRate,
+          rateBasis = rateBasis,
+          totalAmount = totalAmount,
         ).getOrThrow()
       }
     }
@@ -1247,6 +1423,64 @@ class BroilerViewModel(
     }
   }
 
+  fun createMedicineCatalogItem(
+    medicineCode: String,
+    medicineName: String,
+    category: String,
+    packing: Double,
+    unit: String,
+    rate: Double,
+    perKgOrLtr: Double,
+  ) {
+    requireAdminOrSuperAdmin {
+      runMutation("Added $medicineCode ($medicineName) to medicine list") {
+        repository.createMedicineCatalogItem(
+          medicineCode = medicineCode,
+          medicineName = medicineName,
+          category = category,
+          packing = packing,
+          unit = unit,
+          rate = rate,
+          perKgOrLtr = perKgOrLtr,
+        ).getOrThrow()
+      }
+    }
+  }
+
+  fun updateMedicineCatalogItem(
+    item: MedicineCatalogItem,
+    medicineCode: String,
+    medicineName: String,
+    category: String,
+    packing: Double,
+    unit: String,
+    rate: Double,
+    perKgOrLtr: Double,
+  ) {
+    requireAdminOrSuperAdmin {
+      runMutation("Updated medicine $medicineCode") {
+        repository.updateMedicineCatalogItem(
+          itemId = item.id,
+          medicineCode = medicineCode,
+          medicineName = medicineName,
+          category = category,
+          packing = packing,
+          unit = unit,
+          rate = rate,
+          perKgOrLtr = perKgOrLtr,
+        ).getOrThrow()
+      }
+    }
+  }
+
+  fun deleteMedicineCatalogItem(item: MedicineCatalogItem) {
+    requireAdminOrSuperAdmin {
+      runMutation("Deleted ${item.medicineCode} (${item.medicineName})") {
+        repository.deleteMedicineCatalogItem(item.id).getOrThrow()
+      }
+    }
+  }
+
   fun startClosingBatch(
     batch: FlockBatch,
     liftedBirds: Long,
@@ -1323,6 +1557,6 @@ class BroilerViewModel(
     const val STOP_TIMEOUT_MILLIS = 5000L
     const val MILLIS_PER_DAY = 86_400_000L
     const val CATALOG_PREFS_NAME = "spf_catalog_sync"
-    const val CATALOG_SYNC_KEY_PREFIX = "master_catalogs_v3_synced"
+    const val CATALOG_SYNC_KEY_PREFIX = "master_catalogs_v5_synced"
   }
 }

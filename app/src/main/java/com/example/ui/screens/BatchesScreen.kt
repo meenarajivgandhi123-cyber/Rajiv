@@ -367,11 +367,11 @@ private fun BatchesHeaderAndFilters(
     OutlinedTextField(
       value = searchQuery,
       onValueChange = onSearchChange,
-      placeholder = { Text("Search flock ID, farm ID/name, branch, challan...") },
+      placeholder = { Text("Search flock ID, farm code/name, branch, challan...") },
       leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
       singleLine = true,
       shape = MaterialTheme.shapes.medium,
-      modifier = Modifier.fillMaxWidth(),
+      modifier = Modifier.fillMaxWidth().testTag("batches_search_input"),
     )
 
     Row(
@@ -984,11 +984,27 @@ private fun BatchDetailPane(
                 }
               }
               Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                  text = "+${dispatch.bagsCount} bags (${formatDecimal(dispatch.weightKg, 0)} kg)",
-                  style = MonoMetricSmall,
-                  color = MaterialTheme.colorScheme.primary,
-                )
+                Column(horizontalAlignment = Alignment.End) {
+                  Text(
+                    text = "+${dispatch.bagsCount} bags (${formatDecimal(dispatch.weightKg, 0)} kg)",
+                    style = MonoMetricSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                  )
+                  if (dispatch.resolvedTotalAmount > 0.0 || dispatch.unitRate > 0.0) {
+                    val priceLabel = buildString {
+                      if (dispatch.resolvedTotalAmount > 0.0) append(formatCurrency(dispatch.resolvedTotalAmount))
+                      if (dispatch.unitRate > 0.0) {
+                        if (isNotEmpty()) append(" ")
+                        append("(@ ${formatCurrency(dispatch.unitRate)}${dispatch.rateBasisEnum.unitSuffix})")
+                      }
+                    }
+                    Text(
+                      text = priceLabel,
+                      style = MaterialTheme.typography.labelSmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                  }
+                }
                 if (canEditOrDelete) {
                   IconButton(
                     onClick = { onEditFeedDispatchClick(dispatch) },

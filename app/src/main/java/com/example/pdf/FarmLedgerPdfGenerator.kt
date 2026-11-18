@@ -116,22 +116,35 @@ object FarmLedgerPdfGenerator {
     )
 
     // 3. Feed Dispatches
+    val feedHeaderTotal = if (ledger.totalFeedDispatchAmount > 0.0) {
+      " • ${fmtRupee(ledger.totalFeedDispatchAmount)}"
+    } else {
+      ""
+    }
     drawTableSection(
       cursor = cursor,
-      title = "3. FEED ENTRY / DISPATCHES (${ledger.feedDispatches.size} • ${fmtInt(ledger.totalFeedDispatchedBags)} bags)",
+      title = "3. FEED ENTRY / DISPATCHES (${ledger.feedDispatches.size} • ${fmtInt(ledger.totalFeedDispatchedBags)} bags$feedHeaderTotal)",
       columns = listOf(
-        ColSpec("BATCH", 0.15f, Paint.Align.LEFT),
-        ColSpec("DATE", 0.14f, Paint.Align.CENTER),
-        ColSpec("FEED PHASE", 0.18f, Paint.Align.LEFT),
-        ColSpec("CHALLAN NO", 0.21f, Paint.Align.LEFT),
-        ColSpec("BAGS", 0.14f, Paint.Align.RIGHT),
-        ColSpec("WEIGHT (KG)", 0.18f, Paint.Align.RIGHT),
+        ColSpec("BATCH", 0.13f, Paint.Align.LEFT),
+        ColSpec("DATE", 0.11f, Paint.Align.CENTER),
+        ColSpec("FEED PHASE", 0.15f, Paint.Align.LEFT),
+        ColSpec("CHALLAN NO", 0.17f, Paint.Align.LEFT),
+        ColSpec("BAGS", 0.09f, Paint.Align.RIGHT),
+        ColSpec("WT (KG)", 0.11f, Paint.Align.RIGHT),
+        ColSpec("RATE", 0.11f, Paint.Align.RIGHT),
+        ColSpec("AMOUNT", 0.13f, Paint.Align.RIGHT),
       ),
       rows = ledger.feedDispatches.map { d ->
         val challanVeh = listOfNotNull(
           d.challanNo.takeIf { it.isNotBlank() },
           d.vehicleNo.takeIf { it.isNotBlank() },
         ).joinToString(" / ").ifBlank { "—" }
+        val rateCell = if (d.unitRate > 0.0) {
+          "${fmt2(d.unitRate)}${d.rateBasisEnum.unitSuffix}"
+        } else {
+          "—"
+        }
+        val amtCell = if (d.resolvedTotalAmount > 0.0) fmtRupee(d.resolvedTotalAmount) else "—"
         listOf(
           d.batchCode,
           formatDate(d.dispatchEpochDay),
@@ -139,6 +152,8 @@ object FarmLedgerPdfGenerator {
           challanVeh,
           fmtInt(d.bagsCount),
           fmt0(d.weightKg),
+          rateCell,
+          amtCell,
         )
       },
       emptyMessage = "No feed dispatches recorded.",

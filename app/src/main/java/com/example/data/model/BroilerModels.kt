@@ -24,6 +24,18 @@ enum class OperatorRole(val value: String, val label: String, val subtitle: Stri
   }
 }
 
+const val DEFAULT_SUPER_ADMIN_EMAIL = "meenarajivgandhi123@gmail.com"
+
+fun normalizeMappedEmail(raw: String?): String = raw.orEmpty().trim().lowercase(Locale.US)
+
+private val MAPPED_EMAIL_REGEX = Regex("""^[^@\s]+@[^@\s]+\.[^@\s]+$""")
+
+fun isValidMappedEmail(raw: String): Boolean {
+  val trimmed = raw.trim()
+  if (trimmed.isEmpty()) return true
+  return trimmed.length <= 120 && MAPPED_EMAIL_REGEX.matches(trimmed)
+}
+
 @IgnoreExtraProperties
 data class OperatorAccount(
   @DocumentId val id: String = "",
@@ -34,6 +46,7 @@ data class OperatorAccount(
   val passwordHash: String = "",
   val isActive: Boolean = true,
   val allowPreviousDateEntry: Boolean = false,
+  val mappedEmail: String = "",
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
 ) {
@@ -42,6 +55,32 @@ data class OperatorAccount(
 
   val canSelectPreviousDate: Boolean
     get() = roleEnum == OperatorRole.SUPER_ADMIN || allowPreviousDateEntry
+
+  val normalizedMappedEmail: String
+    get() = normalizeMappedEmail(mappedEmail)
+}
+
+fun findOperatorForEmailMapping(
+  operators: List<OperatorAccount>,
+  email: String?,
+): OperatorAccount? {
+  val normalized = normalizeMappedEmail(email)
+  if (normalized.isBlank()) return null
+  return operators
+    .filter { it.isActive && it.normalizedMappedEmail == normalized }
+    .minByOrNull { it.roleEnum.ordinal }
+}
+
+fun isSuperAdminMappedEmail(
+  email: String?,
+  operators: List<OperatorAccount> = emptyList(),
+): Boolean {
+  val normalized = normalizeMappedEmail(email)
+  if (normalized.isBlank()) return false
+  if (normalized == DEFAULT_SUPER_ADMIN_EMAIL) return true
+  return operators.any {
+    it.isActive && it.roleEnum == OperatorRole.SUPER_ADMIN && it.normalizedMappedEmail == normalized
+  }
 }
 
 object PasswordHasher {
@@ -332,6 +371,30 @@ data class DailyLog(
   @ServerTimestamp val updatedAt: Timestamp? = null,
 )
 
+enum class FeedRateBasis(val value: String, val label: String, val unitSuffix: String) {
+  PER_BAG("bag", "Per Bag (50 kg)", "/bag"),
+  PER_KG("kg", "Per Kg", "/kg");
+
+  companion object {
+    fun fromValue(value: String): FeedRateBasis =
+      entries.firstOrNull { it.value.equals(value.trim(), ignoreCase = true) } ?: PER_BAG
+  }
+}
+
+fun computeFeedDispatchTotalAmount(
+  bagsCount: Long,
+  weightKg: Double,
+  unitRate: Double,
+  rateBasis: String,
+): Double {
+  if (unitRate <= 0.0) return 0.0
+  return if (FeedRateBasis.fromValue(rateBasis) == FeedRateBasis.PER_KG) {
+    max(0.0, weightKg * unitRate)
+  } else {
+    max(0.0, bagsCount.toDouble() * unitRate)
+  }
+}
+
 @IgnoreExtraProperties
 data class FeedDispatch(
   @DocumentId val id: String = "",
@@ -345,6 +408,9 @@ data class FeedDispatch(
   val feedType: String = FeedType.STARTER.value,
   val bagsCount: Long = 0L,
   val weightKg: Double = 0.0,
+  val unitRate: Double = 0.0,
+  val rateBasis: String = FeedRateBasis.PER_BAG.value,
+  val totalAmount: Double = 0.0,
   val challanNo: String = "",
   val vehicleNo: String = "",
   val remarks: String = "",
@@ -352,6 +418,16 @@ data class FeedDispatch(
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
 ) {
+  val rateBasisEnum: FeedRateBasis
+    get() = FeedRateBasis.fromValue(rateBasis)
+
+  val resolvedTotalAmount: Double
+    get() = when {
+      totalAmount > 0.0 -> totalAmount
+      unitRate > 0.0 -> computeFeedDispatchTotalAmount(bagsCount, weightKg, unitRate, rateBasis)
+      else -> 0.0
+    }
+
   val resolvedDestinationFarm: String
     get() = listOfNotNull(
       farmCode.takeIf { it.isNotBlank() },
@@ -455,6 +531,74 @@ data class MedicineEntry(
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
 )
+
+@IgnoreExtraProperties
+data class MedicineCatalogItem(
+  @DocumentId val id: String = "",
+  val userId: String = "",
+  val medicineCode: String = "",
+  val medicineName: String = "",
+  val category: String = MedicineCategory.ANTIBIOTIC.value,
+  val packing: Double = 0.0,
+  val unit: String = "",
+  val rate: Double = 0.0,
+  val perKgOrLtr: Double = 0.0,
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null,
+) {
+  val packingDisplay: String
+    get() = if (packing <= 0.0) "—" else String.format(Locale.US, "%.2f", packing)
+
+  val unitDisplay: String
+    get() = unit.ifBlank { "—" }
+
+  val rateDisplay: String
+    get() = if (rate <= 0.0) "—" else String.format(Locale.US, "₹%.2f", rate)
+
+  val perKgOrLtrDisplay: String
+    get() = if (perKgOrLtr <= 0.0) "—" else String.format(Locale.US, "₹%.2f", perKgOrLtr)
+}
+
+private val MEDICINE_QTY_REGEX = Regex("""^\s*(\d+(?:\.\d+)?)""")
+
+fun extractMedicineQuantity(dosageOrQty: String): Double? {
+  val match = MEDICINE_QTY_REGEX.find(dosageOrQty) ?: return null
+  return match.groupValues.getOrNull(1)?.toDoubleOrNull()?.takeIf { it >= 0.0 }
+}
+
+fun computeMedicineTotalCost(dosageOrQty: String, unitRate: Double): Double? {
+  if (unitRate <= 0.0) return null
+  val qty = extractMedicineQuantity(dosageOrQty) ?: return null
+  return max(0.0, qty * unitRate)
+}
+
+fun filterAndRankMedicineCatalog(
+  items: List<MedicineCatalogItem>,
+  query: String,
+): List<MedicineCatalogItem> {
+  val trimmed = query.trim()
+  if (trimmed.isEmpty()) return items
+  val normQuery = trimmed.replace(" ", "").uppercase()
+  val upperQuery = trimmed.uppercase()
+  return items
+    .mapNotNull { item ->
+      val codeUpper = item.medicineCode.trim().uppercase()
+      val codeNorm = codeUpper.replace(" ", "")
+      val nameUpper = item.medicineName.trim().uppercase()
+      val rank = when {
+        codeNorm == normQuery -> 0
+        codeNorm.startsWith(normQuery) -> 1
+        codeNorm.contains(normQuery) -> 2
+        nameUpper.startsWith(upperQuery) -> 3
+        nameUpper.contains(upperQuery) -> 4
+        item.unit.uppercase().contains(upperQuery) || item.category.uppercase().contains(upperQuery) -> 5
+        else -> return@mapNotNull null
+      }
+      rank to item
+    }
+    .sortedWith(compareBy({ it.first }, { it.second.medicineCode.uppercase() }))
+    .map { it.second }
+}
 
 enum class ClaimStatus(val value: String, val label: String) {
   PENDING("pending", "Pending"),
@@ -925,6 +1069,7 @@ data class FarmLedgerData(
   val totalSurvivingBirds: Long,
   val totalFeedDispatchedBags: Long,
   val totalFeedDispatchedKg: Double,
+  val totalFeedDispatchAmount: Double = 0.0,
   val totalFeedTransferredInBags: Long,
   val totalFeedTransferredOutBags: Long,
   val totalFeedConsumedKg: Double,
@@ -989,6 +1134,7 @@ object FarmLedgerCalculator {
       totalSurvivingBirds = farmBatches.sumOf { it.survivingBirds },
       totalFeedDispatchedBags = dispatches.sumOf { it.bagsCount },
       totalFeedDispatchedKg = dispatches.sumOf { it.weightKg },
+      totalFeedDispatchAmount = dispatches.sumOf { it.resolvedTotalAmount },
       totalFeedTransferredInBags = inBags,
       totalFeedTransferredOutBags = outBags,
       totalFeedConsumedKg = farmBatches.sumOf { it.cumulativeFeedKg },

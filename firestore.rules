@@ -151,6 +151,9 @@ service cloud.firestore {
              data.feedType in ['Pre-Starter', 'Starter', 'Grower', 'Finisher'] &&
              data.bagsCount is int && data.bagsCount >= 1 && data.bagsCount <= 10000 &&
              data.weightKg is number && data.weightKg >= 1 && data.weightKg <= 500000 &&
+             (!('unitRate' in data) || (data.unitRate is number && data.unitRate >= 0 && data.unitRate <= 1000000)) &&
+             (!('rateBasis' in data) || data.rateBasis == null || data.rateBasis in ['bag', 'kg']) &&
+             (!('totalAmount' in data) || (data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 200000000)) &&
              data.challanNo is string && data.challanNo.size() >= 1 && data.challanNo.size() <= 40 &&
              (!('vehicleNo' in data) || data.vehicleNo == null || (data.vehicleNo is string && data.vehicleNo.size() <= 30)) &&
              (!('remarks' in data) || data.remarks == null || (data.remarks is string && data.remarks.size() <= 200)) &&
@@ -213,6 +216,7 @@ service cloud.firestore {
              data.passwordHash is string && data.passwordHash.size() >= 16 && data.passwordHash.size() <= 160 &&
              data.isActive is bool &&
              (!('allowPreviousDateEntry' in data) || data.allowPreviousDateEntry is bool) &&
+             (!('mappedEmail' in data) || data.mappedEmail == null || (data.mappedEmail is string && data.mappedEmail.size() <= 120)) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
@@ -275,6 +279,19 @@ service cloud.firestore {
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
+    function isValidMedicineCatalogItem(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.medicineCode is string && data.medicineCode.size() >= 1 && data.medicineCode.size() <= 30 &&
+             data.medicineName is string && data.medicineName.size() >= 1 && data.medicineName.size() <= 120 &&
+             data.category in ['Vaccine', 'Antibiotic', 'Supplement / Vitamin', 'Sanitizer', 'Other'] &&
+             data.packing is number && data.packing >= 0 && data.packing <= 100000 &&
+             (!('unit' in data) || data.unit == null || (data.unit is string && data.unit.size() <= 20)) &&
+             data.rate is number && data.rate >= 0 && data.rate <= 10000000 &&
+             data.perKgOrLtr is number && data.perKgOrLtr >= 0 && data.perKgOrLtr <= 10000000 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
     // --- User-Scoped Subcollections ---
     match /users/{userId} {
       allow read, write: if false;
@@ -318,7 +335,7 @@ service cloud.firestore {
                          ]) &&
                          incoming().keys().hasOnly([
                            'userId', 'empCode', 'fullName', 'role', 'passwordHash',
-                           'isActive', 'allowPreviousDateEntry', 'createdAt', 'updatedAt'
+                           'isActive', 'allowPreviousDateEntry', 'mappedEmail', 'createdAt', 'updatedAt'
                          ]);
 
         allow update: if isOwner(userId) &&
@@ -327,7 +344,8 @@ service cloud.firestore {
                          incoming().userId == existing().userId &&
                          incoming().createdAt == existing().createdAt &&
                          incoming().diff(existing()).affectedKeys().hasOnly([
-                           'fullName', 'role', 'passwordHash', 'isActive', 'allowPreviousDateEntry', 'updatedAt'
+                           'fullName', 'role', 'passwordHash', 'isActive',
+                           'allowPreviousDateEntry', 'mappedEmail', 'updatedAt'
                          ]);
 
         allow delete: if isOwner(userId) && isValidId(operatorId);
@@ -485,8 +503,9 @@ service cloud.firestore {
                          ]) &&
                          incoming().keys().hasOnly([
                            'userId', 'batchId', 'farmerId', 'farmerName', 'farmCode', 'farmName',
-                           'batchCode', 'feedType', 'bagsCount', 'weightKg', 'challanNo',
-                           'vehicleNo', 'remarks', 'dispatchEpochDay', 'createdAt', 'updatedAt'
+                           'batchCode', 'feedType', 'bagsCount', 'weightKg', 'unitRate', 'rateBasis',
+                           'totalAmount', 'challanNo', 'vehicleNo', 'remarks', 'dispatchEpochDay',
+                           'createdAt', 'updatedAt'
                          ]) &&
                          exists(/databases/$(database)/documents/users/$(userId)/batches/$(incoming().batchId));
 
@@ -498,8 +517,9 @@ service cloud.firestore {
                          incoming().farmerId == existing().farmerId &&
                          incoming().createdAt == existing().createdAt &&
                          incoming().diff(existing()).affectedKeys().hasOnly([
-                           'feedType', 'bagsCount', 'weightKg', 'challanNo',
-                           'vehicleNo', 'remarks', 'dispatchEpochDay', 'updatedAt'
+                           'feedType', 'bagsCount', 'weightKg', 'unitRate', 'rateBasis',
+                           'totalAmount', 'challanNo', 'vehicleNo', 'remarks',
+                           'dispatchEpochDay', 'updatedAt'
                          ]);
         allow delete: if isOwner(userId) && isValidId(dispatchId);
       }
@@ -677,6 +697,35 @@ service cloud.firestore {
                          ]);
 
         allow delete: if isOwner(userId) && isValidId(entryId);
+      }
+
+      match /medicinesCatalog/{itemId} {
+        allow get: if isOwner(userId) && isValidId(itemId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(itemId) &&
+                         isValidMedicineCatalogItem(incoming()) &&
+                         incoming().keys().hasAll([
+                           'userId', 'medicineCode', 'medicineName', 'category',
+                           'packing', 'rate', 'perKgOrLtr', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'medicineCode', 'medicineName', 'category',
+                           'packing', 'unit', 'rate', 'perKgOrLtr', 'createdAt', 'updatedAt'
+                         ]);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(itemId) &&
+                         isValidMedicineCatalogItem(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'medicineCode', 'medicineName', 'category',
+                           'packing', 'unit', 'rate', 'perKgOrLtr', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(itemId);
       }
     }
   }

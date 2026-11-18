@@ -5,9 +5,11 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.base.FirestoreEmulatorTestBase
 import com.example.data.catalog.MasterBatchCatalog
 import com.example.data.catalog.MasterFarmerCatalog
+import com.example.data.catalog.MasterMedicineCatalog
 import com.example.data.model.BatchStatus
 import com.example.data.model.FarmStatus
 import com.example.data.model.GcStatementDetails
+import com.example.data.model.MedicineCategory
 import com.example.data.model.OperatorRole
 import com.example.data.model.PasswordHasher
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -179,6 +181,8 @@ class BroilerRepositoryRuleTest : FirestoreEmulatorTestBase() {
         dispatchEpochDay = 20715L,
         vehicleNo = "HR-05-TR-4455",
         remarks = "Direct mill dispatch",
+        unitRate = 2150.0,
+        rateBasis = "bag",
       ).getOrThrow()
       val savedDispatch = withTimeout(FLOW_TIMEOUT_MS) {
         repo.observeFeedDispatches(uid).first { list -> list.any { it.id == dispatchId } }
@@ -187,6 +191,9 @@ class BroilerRepositoryRuleTest : FirestoreEmulatorTestBase() {
       assertEquals("MEHARBAN PF BAI KHERI", savedDispatch.farmName)
       assertEquals("HR-05-TR-4455", savedDispatch.vehicleNo)
       assertEquals("Direct mill dispatch", savedDispatch.remarks)
+      assertEquals(2150.0, savedDispatch.unitRate, 0.01)
+      assertEquals("bag", savedDispatch.rateBasis)
+      assertEquals(774000.0, savedDispatch.totalAmount, 0.01)
 
       repo.updateFeedDispatch(
         dispatch = savedDispatch,
@@ -197,6 +204,8 @@ class BroilerRepositoryRuleTest : FirestoreEmulatorTestBase() {
         vehicleNo = "HR-05-TR-4466",
         remarks = "Verified weighbridge slip",
         dispatchEpochDay = 20715L,
+        unitRate = 44.0,
+        rateBasis = "kg",
       ).getOrThrow()
       val updatedDispatch = withTimeout(FLOW_TIMEOUT_MS) {
         repo.observeFeedDispatches(uid).first { list ->
@@ -204,6 +213,9 @@ class BroilerRepositoryRuleTest : FirestoreEmulatorTestBase() {
         }.first { it.id == dispatchId }
       }
       assertEquals("Verified weighbridge slip", updatedDispatch.remarks)
+      assertEquals(44.0, updatedDispatch.unitRate, 0.01)
+      assertEquals("kg", updatedDispatch.rateBasis)
+      assertEquals(792000.0, updatedDispatch.totalAmount, 0.01)
     }
     val saleId = withTimeout(DEFAULT_TIMEOUT_MS) {
       repo.addBirdSale(
@@ -375,6 +387,7 @@ class BroilerRepositoryRuleTest : FirestoreEmulatorTestBase() {
         role = OperatorRole.SUPER_ADMIN,
         password = "pass$suffix",
         allowPreviousDateEntry = false,
+        mappedEmail = "  Meenarajivgandhi123@gmail.com  ",
       ).getOrThrow()
     }
 
@@ -384,6 +397,7 @@ class BroilerRepositoryRuleTest : FirestoreEmulatorTestBase() {
     val created = operators.first { it.id == opId }
     assertEquals(OperatorRole.SUPER_ADMIN, created.roleEnum)
     assertTrue(created.canSelectPreviousDate)
+    assertEquals("meenarajivgandhi123@gmail.com", created.mappedEmail)
     assertTrue(PasswordHasher.verifyPassword("pass$suffix", created.passwordHash))
 
     withTimeout(DEFAULT_TIMEOUT_MS) {
@@ -394,6 +408,7 @@ class BroilerRepositoryRuleTest : FirestoreEmulatorTestBase() {
         isActive = true,
         newPassword = "newpass$suffix",
         allowPreviousDateEntry = true,
+        mappedEmail = "AdminLead@SPF.in",
       ).getOrThrow()
     }
     val updated = withTimeout(FLOW_TIMEOUT_MS) {
@@ -403,6 +418,7 @@ class BroilerRepositoryRuleTest : FirestoreEmulatorTestBase() {
     }
     assertTrue(updated.allowPreviousDateEntry)
     assertTrue(updated.canSelectPreviousDate)
+    assertEquals("adminlead@spf.in", updated.mappedEmail)
     assertTrue(PasswordHasher.verifyPassword("newpass$suffix", updated.passwordHash))
   }
 
@@ -815,21 +831,21 @@ class BroilerRepositoryRuleTest : FirestoreEmulatorTestBase() {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val farmerRows = MasterFarmerCatalog.loadFromAssets(context)
     val batchRows = MasterBatchCatalog.loadFromAssets(context)
-    assertEquals("Expected all 299 parsed flock rows", 299, batchRows.size)
+    assertEquals("Expected all 649 parsed flock rows", 649, batchRows.size)
 
     withTimeout(45_000L) {
       repo.syncMasterFarmersCatalog(farmerRows, backfillExisting = true).getOrThrow()
     }
-    val firstStats = withTimeout(45_000L) {
+    val firstStats = withTimeout(90_000L) {
       repo.syncMasterBatchesCatalog(batchRows, backfillExisting = true).getOrThrow()
     }
-    assertEquals(299, firstStats.batchesCreated)
+    assertEquals(649, firstStats.batchesCreated)
     assertEquals(6, firstStats.stubFarmersCreated)
 
-    val batches = withTimeout(FLOW_TIMEOUT_MS) {
-      repo.observeBatches(uid).first { it.size >= 299 }
+    val batches = withTimeout(8_000L) {
+      repo.observeBatches(uid).first { it.size >= 649 }
     }
-    assertEquals(299, batches.size)
+    assertEquals(649, batches.size)
 
     val farmers = withTimeout(FLOW_TIMEOUT_MS) {
       repo.observeFarmers(uid).first { it.any { f -> f.farmCode == "RJ004" } }
@@ -852,14 +868,129 @@ class BroilerRepositoryRuleTest : FirestoreEmulatorTestBase() {
     assertEquals(BatchStatus.CLOSED, batch1010.statusEnum)
     assertTrue(batch1010.closedEpochDay > 0L)
 
+    val batch1132 = batches.firstOrNull { it.batchCode == "1132" }
+    assertNotNull(batch1132)
+    assertEquals("F046", batch1132!!.farmCode)
+    assertEquals(9231L, batch1132.chicksPlaced)
+    assertEquals(185L, batch1132.freeChicks)
+    assertEquals(9416L, batch1132.totalBirdsStarted)
+    assertEquals(BatchStatus.CLOSED, batch1132.statusEnum)
+
+    val batch1154 = batches.firstOrNull { it.batchCode == "1154" }
+    assertNotNull(batch1154)
+    assertEquals("GURTINDER", batch1154!!.zoneName)
+    assertEquals(7400L, batch1154.totalBirdsStarted)
+
+    val batch1230 = batches.firstOrNull { it.batchCode == "1230" }
+    assertNotNull(batch1230)
+    assertEquals(11500L, batch1230!!.totalBirdsStarted)
+
+    val batchUk0505 = batches.firstOrNull { it.batchCode == "UK0505" }
+    assertNotNull(batchUk0505)
+    assertEquals("UKF124", batchUk0505!!.farmCode)
+    assertEquals(3922L, batchUk0505.chicksPlaced)
+    assertEquals(78L, batchUk0505.freeChicks)
+    assertEquals(4000L, batchUk0505.totalBirdsStarted)
+    assertEquals(BatchStatus.CLOSED, batchUk0505.statusEnum)
+
     // Re-running must be completely idempotent
-    val secondStats = withTimeout(45_000L) {
+    val secondStats = withTimeout(60_000L) {
       repo.syncMasterBatchesCatalog(batchRows, backfillExisting = true).getOrThrow()
     }
     assertEquals(0, secondStats.zonesCreated)
     assertEquals(0, secondStats.stubFarmersCreated)
     assertEquals(0, secondStats.batchesCreated)
     assertEquals(0, secondStats.batchesBackfilled)
+  }
+
+  @Test
+  fun syncMasterMedicinesCatalog_importsAll129RowsAndCrud_succeeds() = runBlocking {
+    val uid = signInTestUser("med_catalog_${UUID.randomUUID().toString().take(8)}@test.com")
+    val repo = BroilerRepository(firestore, auth)
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val medRows = MasterMedicineCatalog.loadFromAssets(context)
+    assertEquals("Expected all 129 parsed medicine/vaccine catalog rows", 129, medRows.size)
+
+    val firstStats = withTimeout(30_000L) {
+      repo.syncMasterMedicinesCatalog(medRows, backfillExisting = true).getOrThrow()
+    }
+    assertEquals(129, firstStats.itemsCreated)
+    assertEquals(0, firstStats.itemsBackfilled)
+
+    val items = withTimeout(FLOW_TIMEOUT_MS) {
+      repo.observeMedicineCatalog(uid).first { it.size >= 129 }
+    }
+    assertEquals(129, items.size)
+
+    val m008 = items.firstOrNull { it.medicineCode == "M008" }
+    assertNotNull(m008)
+    assertEquals("MENTOFIN", m008!!.medicineName)
+    assertEquals(500.0, m008.packing, 0.01)
+    assertEquals("ML", m008.unit)
+    assertEquals(1330.0, m008.rate, 0.01)
+    assertEquals(2.66, m008.perKgOrLtr, 0.01)
+
+    val v001 = items.firstOrNull { it.medicineCode == "V001" }
+    assertNotNull(v001)
+    assertEquals("MB 5000", v001!!.medicineName)
+    assertEquals(MedicineCategory.VACCINE.value, v001.category)
+    assertEquals(1425.0, v001.rate, 0.01)
+
+    val m092 = items.firstOrNull { it.medicineCode == "M092" }
+    assertNotNull(m092)
+    assertEquals("NICOMIX", m092!!.medicineName)
+    assertEquals(610.0, m092.rate, 0.01)
+
+    // Re-running must be completely idempotent
+    val secondStats = withTimeout(20_000L) {
+      repo.syncMasterMedicinesCatalog(medRows, backfillExisting = true).getOrThrow()
+    }
+    assertEquals(0, secondStats.itemsCreated)
+    assertEquals(0, secondStats.itemsBackfilled)
+
+    // Create, update, and delete custom item via CRUD
+    val customId = withTimeout(DEFAULT_TIMEOUT_MS) {
+      repo.createMedicineCatalogItem(
+        medicineCode = "M095",
+        medicineName = "GUT PRO 1L",
+        category = MedicineCategory.SUPPLEMENT.value,
+        packing = 5.0,
+        unit = "LTR",
+        rate = 1250.0,
+        perKgOrLtr = 250.0,
+      ).getOrThrow()
+    }
+    val afterCreate = withTimeout(FLOW_TIMEOUT_MS) {
+      repo.observeMedicineCatalog(uid).first { list -> list.any { it.id == customId } }
+    }
+    assertEquals("M095", afterCreate.first { it.id == customId }.medicineCode)
+
+    withTimeout(DEFAULT_TIMEOUT_MS) {
+      repo.updateMedicineCatalogItem(
+        itemId = customId,
+        medicineCode = "M095",
+        medicineName = "GUT PRO PLUS",
+        category = MedicineCategory.SUPPLEMENT.value,
+        packing = 5.0,
+        unit = "LTR",
+        rate = 1500.0,
+        perKgOrLtr = 300.0,
+      ).getOrThrow()
+    }
+    val afterUpdate = withTimeout(FLOW_TIMEOUT_MS) {
+      repo.observeMedicineCatalog(uid).first { list ->
+        list.firstOrNull { it.id == customId }?.medicineName == "GUT PRO PLUS"
+      }
+    }
+    assertEquals(1500.0, afterUpdate.first { it.id == customId }.rate, 0.01)
+
+    withTimeout(DEFAULT_TIMEOUT_MS) {
+      repo.deleteMedicineCatalogItem(customId).getOrThrow()
+    }
+    val afterDelete = withTimeout(FLOW_TIMEOUT_MS) {
+      repo.observeMedicineCatalog(uid).first { list -> list.none { it.id == customId } }
+    }
+    assertEquals(129, afterDelete.size)
   }
 
   private companion object {

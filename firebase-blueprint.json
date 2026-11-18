@@ -177,6 +177,9 @@
         "feedType": { "type": "string", "enum": ["Pre-Starter", "Starter", "Grower", "Finisher"] },
         "bagsCount": { "type": "integer" },
         "weightKg": { "type": "number" },
+        "unitRate": { "type": "number" },
+        "rateBasis": { "type": "string", "enum": ["bag", "kg"] },
+        "totalAmount": { "type": "number" },
         "challanNo": { "type": "string" },
         "vehicleNo": { "type": "string" },
         "remarks": { "type": "string" },
@@ -301,6 +304,7 @@
         "passwordHash": { "type": "string" },
         "isActive": { "type": "boolean" },
         "allowPreviousDateEntry": { "type": "boolean" },
+        "mappedEmail": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -350,6 +354,34 @@
         "totalCost",
         "invoiceOrSlipNo",
         "entryEpochDay",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "MedicineCatalogItem": {
+      "title": "MedicineCatalogItem",
+      "description": "Master medicine and vaccine catalog item storing code, medicine name, packing, unit, rate, and per-kg/ltr rate.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "medicineCode": { "type": "string" },
+        "medicineName": { "type": "string" },
+        "category": { "type": "string", "enum": ["Vaccine", "Antibiotic", "Supplement / Vitamin", "Sanitizer", "Other"] },
+        "packing": { "type": "number" },
+        "unit": { "type": "string" },
+        "rate": { "type": "number" },
+        "perKgOrLtr": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId",
+        "medicineCode",
+        "medicineName",
+        "category",
+        "packing",
+        "rate",
+        "perKgOrLtr",
         "createdAt",
         "updatedAt"
       ]
@@ -466,6 +498,10 @@
     "/users/{userId}/medicineEntries/{entryId}": {
       "schema": { "$ref": "#/entities/MedicineEntry" },
       "description": "User-scoped medicine, vaccine, and supplement issue ledger entries"
+    },
+    "/users/{userId}/medicinesCatalog/{itemId}": {
+      "schema": { "$ref": "#/entities/MedicineCatalogItem" },
+      "description": "User-scoped master medicine and vaccine price/packing catalog"
     },
     "/users/{userId}/kmEntries/{entryId}": {
       "schema": { "$ref": "#/entities/KmDailyEntry" },

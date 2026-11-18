@@ -431,6 +431,7 @@ test("Owner can manage super_admin, admin, user operators with allowPreviousDate
       passwordHash: "salt1234:abcdef0123456789abcdef0123456789",
       isActive: true,
       allowPreviousDateEntry: true,
+      mappedEmail: "meenarajivgandhi123@gmail.com",
       createdAt: ts(),
       updatedAt: ts(),
     })
@@ -445,18 +446,20 @@ test("Owner can manage super_admin, admin, user operators with allowPreviousDate
       passwordHash: "salt1234:abcdef0123456789abcdef0123456789",
       isActive: true,
       allowPreviousDateEntry: false,
+      mappedEmail: "",
       createdAt: ts(),
       updatedAt: ts(),
     })
   );
 
-  // Super Admin granting Previous Date Entry permission succeeds
+  // Super Admin granting Previous Date Entry & mappedEmail permission succeeds
   await assertSucceeds(
     userOpRef.update({
       fullName: "Field Supervisor",
       role: "user",
       isActive: true,
       allowPreviousDateEntry: true,
+      mappedEmail: "supervisor@spf.in",
       updatedAt: ts(),
     })
   );
@@ -468,6 +471,17 @@ test("Owner can manage super_admin, admin, user operators with allowPreviousDate
       role: "user",
       isActive: true,
       allowPreviousDateEntry: "yes",
+      updatedAt: ts(),
+    })
+  );
+
+  // Oversized mappedEmail (>120 chars) fails schema check
+  await assertFails(
+    userOpRef.update({
+      fullName: "Field Supervisor",
+      role: "user",
+      isActive: true,
+      mappedEmail: `${"a".repeat(115)}@test.com`,
       updatedAt: ts(),
     })
   );
@@ -912,6 +926,9 @@ test("FeedDispatch destination farm/vehicle/remarks and BirdSale customer phone/
       feedType: "Starter",
       bagsCount: 50,
       weightKg: 2500.0,
+      unitRate: 2100.0,
+      rateBasis: "bag",
+      totalAmount: 105000.0,
       challanNo: "FD-1001",
       vehicleNo: "HR-05-TR-8899",
       remarks: "Delivered to shed 1",
@@ -926,6 +943,9 @@ test("FeedDispatch destination farm/vehicle/remarks and BirdSale customer phone/
       feedType: "Grower",
       bagsCount: 60,
       weightKg: 3000.0,
+      unitRate: 43.5,
+      rateBasis: "kg",
+      totalAmount: 130500.0,
       challanNo: "FD-1001R",
       vehicleNo: "HR-05-TR-9900",
       remarks: "Revised quantity",
@@ -949,6 +969,29 @@ test("FeedDispatch destination farm/vehicle/remarks and BirdSale customer phone/
       weightKg: 1000.0,
       challanNo: "FD-1002",
       vehicleNo: "V".repeat(41),
+      dispatchEpochDay: 20705,
+      createdAt: ts(),
+      updatedAt: ts(),
+    })
+  );
+
+  // Negative unitRate or invalid rateBasis must fail
+  await assertFails(
+    aliceDb.collection("users").doc(ALICE_UID).collection("feedDispatches").doc("disp_bad_rate").set({
+      userId: ALICE_UID,
+      batchId: "b1",
+      farmerId: "f1",
+      farmerName: "Ramesh Gowda",
+      farmCode: "FRM-101",
+      farmName: "Ramesh PF",
+      batchCode: "UP0161",
+      feedType: "Starter",
+      bagsCount: 20,
+      weightKg: 1000.0,
+      unitRate: -10.0,
+      rateBasis: "ton",
+      totalAmount: 5000.0,
+      challanNo: "FD-1003",
       dispatchEpochDay: 20705,
       createdAt: ts(),
       updatedAt: ts(),
@@ -1023,6 +1066,81 @@ test("FeedDispatch destination farm/vehicle/remarks and BirdSale customer phone/
       updatedAt: ts(),
     })
   );
+});
+
+test("medicinesCatalog lifecycle: create, update, schema validation, and cross-user/unauth rejection", async () => {
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+  await assertFails(unauthDb.collection("users").doc(ALICE_UID).collection("medicinesCatalog").get());
+
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const medRef = aliceDb.collection("users").doc(ALICE_UID).collection("medicinesCatalog").doc("med_cat_M008");
+
+  await assertSucceeds(
+    medRef.set({
+      userId: ALICE_UID,
+      medicineCode: "M008",
+      medicineName: "MENTOFIN",
+      category: "Antibiotic",
+      packing: 500.0,
+      unit: "ML",
+      rate: 1330.0,
+      perKgOrLtr: 2.66,
+      createdAt: ts(),
+      updatedAt: ts(),
+    })
+  );
+
+  await assertSucceeds(
+    medRef.update({
+      medicineCode: "M008",
+      medicineName: "MENTOFIN ORAL",
+      category: "Supplement / Vitamin",
+      packing: 500.0,
+      unit: "ML",
+      rate: 1350.0,
+      perKgOrLtr: 2.7,
+      updatedAt: ts(),
+    })
+  );
+
+  // Invalid category or negative rate must fail
+  await assertFails(
+    aliceDb.collection("users").doc(ALICE_UID).collection("medicinesCatalog").doc("med_bad_cat").set({
+      userId: ALICE_UID,
+      medicineCode: "M999",
+      medicineName: "Invalid Cat Med",
+      category: "UnknownType",
+      packing: 1.0,
+      unit: "LTR",
+      rate: 100.0,
+      perKgOrLtr: 100.0,
+      createdAt: ts(),
+      updatedAt: ts(),
+    })
+  );
+
+  await assertFails(
+    aliceDb.collection("users").doc(ALICE_UID).collection("medicinesCatalog").doc("med_bad_rate").set({
+      userId: ALICE_UID,
+      medicineCode: "M998",
+      medicineName: "Negative Rate",
+      category: "Antibiotic",
+      packing: 1.0,
+      unit: "LTR",
+      rate: -5.0,
+      perKgOrLtr: 0.0,
+      createdAt: ts(),
+      updatedAt: ts(),
+    })
+  );
+
+  // Cross-user read & write must fail
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("medicinesCatalog").get());
+  await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("medicinesCatalog").doc("med_cat_M008").delete());
+
+  // Owner delete succeeds
+  await assertSucceeds(medRef.delete());
 });
 
 

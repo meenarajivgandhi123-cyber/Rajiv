@@ -27,12 +27,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.Badge
+import androidx.compose.material.icons.rounded.Email
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -64,25 +67,36 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.data.model.DEFAULT_SUPER_ADMIN_EMAIL
 import com.example.data.model.OperatorAccount
 import com.example.data.model.OperatorRole
+import com.example.data.model.findOperatorForEmailMapping
+import com.example.data.model.isValidMappedEmail
+import com.example.data.model.normalizeMappedEmail
 
 @Composable
 fun OperatorLoginScreen(
+  rawEmail: String?,
   workspaceEmail: String,
   operators: List<OperatorAccount>,
   isSaving: Boolean,
   loginError: String?,
   onEmpCodeLogin: (role: OperatorRole, empCode: String, password: String) -> Unit,
-  onBootstrapSuperAdmin: (empCode: String, fullName: String, password: String) -> Unit,
+  onQuickEmailLogin: (OperatorAccount) -> Unit,
+  onBootstrapSuperAdmin: (empCode: String, fullName: String, password: String, mappedEmail: String) -> Unit,
   onClearError: () -> Unit,
   onDisconnectGoogle: () -> Unit,
 ) {
   val isFirstSetup = operators.isEmpty()
+  val cleanSignedInEmail = normalizeMappedEmail(rawEmail)
+  val mappedOperator = remember(operators, rawEmail) {
+    findOperatorForEmailMapping(operators, rawEmail)
+  }
 
   var selectedRole by remember { mutableStateOf(OperatorRole.SUPER_ADMIN) }
   var empCode by remember { mutableStateOf(if (isFirstSetup) "SA-001" else "") }
   var fullName by remember { mutableStateOf("") }
+  var mappedEmail by remember(cleanSignedInEmail) { mutableStateOf(cleanSignedInEmail) }
   var password by remember { mutableStateOf("") }
   var confirmPassword by remember { mutableStateOf("") }
   var showPassword by remember { mutableStateOf(false) }
@@ -159,13 +173,63 @@ fun OperatorLoginScreen(
               )
               Text(
                 text = if (isFirstSetup) {
-                  "Set your Super Admin Emp Code & Password. You can then create Admin and User employee codes."
+                  "Set your Super Admin Emp Code, Password & Email mapping. You can then create Admin and User employee codes."
                 } else {
                   "Select Super Admin, Admin, or User and sign in with Emp Code & Password"
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
               )
+            }
+          }
+
+          if (!isFirstSetup && mappedOperator != null) {
+            Surface(
+              shape = MaterialTheme.shapes.large,
+              color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+              border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                  Icon(
+                    imageVector = Icons.Rounded.VerifiedUser,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp),
+                  )
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = "Mapped Email Permission Detected",
+                      style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                      color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                      text = "${mappedOperator.normalizedMappedEmail} -> ${mappedOperator.roleEnum.label} (${mappedOperator.empCode})",
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                  }
+                }
+                Button(
+                  onClick = { onQuickEmailLogin(mappedOperator) },
+                  colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                  ),
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("quick_email_login_button"),
+                ) {
+                  Text("Quick Enter as ${mappedOperator.roleEnum.label} (${mappedOperator.empCode})")
+                }
+              }
             }
           }
 
@@ -249,6 +313,25 @@ fun OperatorLoginScreen(
                 .fillMaxWidth()
                 .testTag("super_admin_name_input"),
             )
+
+            OutlinedTextField(
+              value = mappedEmail,
+              onValueChange = {
+                mappedEmail = it.trim().lowercase()
+                localValidationError = null
+              },
+              label = { Text("Super Admin Mapped Email ID (Optional)") },
+              placeholder = { Text(DEFAULT_SUPER_ADMIN_EMAIL) },
+              leadingIcon = { Icon(Icons.Rounded.Email, contentDescription = null) },
+              supportingText = {
+                Text("Default Super Admin email $DEFAULT_SUPER_ADMIN_EMAIL is auto-granted permission.")
+              },
+              singleLine = true,
+              keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("super_admin_email_input"),
+            )
           }
 
           OutlinedTextField(
@@ -316,9 +399,10 @@ fun OperatorLoginScreen(
                 when {
                   empCode.trim().length < 2 -> localValidationError = "Emp Code must be at least 2 characters."
                   fullName.isBlank() -> localValidationError = "Enter Super Admin full name."
+                  !isValidMappedEmail(mappedEmail) -> localValidationError = "Enter a valid Email ID or leave blank."
                   password.length < 4 -> localValidationError = "Password must be at least 4 characters."
                   password != confirmPassword -> localValidationError = "Passwords do not match."
-                  else -> onBootstrapSuperAdmin(empCode, fullName, password)
+                  else -> onBootstrapSuperAdmin(empCode, fullName, password, mappedEmail)
                 }
               } else {
                 onEmpCodeLogin(selectedRole, empCode, password)

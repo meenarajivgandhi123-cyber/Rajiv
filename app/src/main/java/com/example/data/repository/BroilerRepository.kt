@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.R
 import com.example.data.catalog.CatalogBatchRow
 import com.example.data.catalog.CatalogFarmerRow
+import com.example.data.catalog.CatalogMedicineRow
 import com.example.data.catalog.MasterFarmerCatalog
 import com.example.data.model.BatchStatus
 import com.example.data.model.BirdSale
@@ -12,6 +13,7 @@ import com.example.data.model.DailyLog
 import com.example.data.model.FarmStatus
 import com.example.data.model.Farmer
 import com.example.data.model.FeedDispatch
+import com.example.data.model.FeedRateBasis
 import com.example.data.model.FeedTransfer
 import com.example.data.model.FlockBatch
 import com.example.data.model.GcStatementDetails
@@ -19,11 +21,15 @@ import com.example.data.model.IntegrationZone
 import com.example.data.model.KmClaim
 import com.example.data.model.KmDailyEntry
 import com.example.data.model.KmMonthHelper
+import com.example.data.model.MedicineCatalogItem
 import com.example.data.model.MedicineEntry
 import com.example.data.model.OperatorAccount
 import com.example.data.model.OperatorRole
 import com.example.data.model.PasswordHasher
 import com.example.data.model.SettlementCalculator
+import com.example.data.model.computeFeedDispatchTotalAmount
+import com.example.data.model.isValidMappedEmail
+import com.example.data.model.normalizeMappedEmail
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
@@ -52,6 +58,11 @@ data class SyncBatchCatalogStats(
   val stubFarmersCreated: Int,
   val batchesCreated: Int,
   val batchesBackfilled: Int,
+)
+
+data class SyncMedicineCatalogStats(
+  val itemsCreated: Int,
+  val itemsBackfilled: Int,
 )
 
 class BroilerRepository(
@@ -102,6 +113,9 @@ class BroilerRepository(
 
   private fun medicineEntriesCollection(uid: String) =
     db.collection("users").document(uid).collection("medicineEntries")
+
+  private fun medicineCatalogCollection(uid: String) =
+    db.collection("users").document(uid).collection("medicinesCatalog")
 
   fun observeZones(userId: String): Flow<List<IntegrationZone>> = flow {
     val path = "users/$userId/zones"
@@ -215,13 +229,16 @@ class BroilerRepository(
     role: OperatorRole,
     password: String,
     allowPreviousDateEntry: Boolean = false,
+    mappedEmail: String = "",
   ): Result<String> {
     return runCatching {
       val uid = requireUserId()
       val normalizedCode = empCode.trim().uppercase()
+      val cleanEmail = normalizeMappedEmail(mappedEmail)
       require(normalizedCode.length >= 2) { "Employee code must be at least 2 characters" }
       require(fullName.isNotBlank()) { "Full name is required" }
       require(password.length >= 4) { "Password must be at least 4 characters" }
+      require(isValidMappedEmail(cleanEmail)) { "Enter a valid Email ID for mapping" }
 
       val existing = operatorsCollection(uid)
         .whereEqualTo("empCode", normalizedCode)
@@ -240,6 +257,7 @@ class BroilerRepository(
         "passwordHash" to PasswordHasher.hashPassword(password),
         "isActive" to true,
         "allowPreviousDateEntry" to (role == OperatorRole.SUPER_ADMIN || allowPreviousDateEntry),
+        "mappedEmail" to cleanEmail.take(120),
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp(),
       )
@@ -262,6 +280,7 @@ class BroilerRepository(
     isActive: Boolean,
     newPassword: String? = null,
     allowPreviousDateEntry: Boolean = false,
+    mappedEmail: String? = null,
   ): Result<Unit> {
     return runCatching {
       val uid = requireUserId()
@@ -273,6 +292,11 @@ class BroilerRepository(
         "allowPreviousDateEntry" to (role == OperatorRole.SUPER_ADMIN || allowPreviousDateEntry),
         "updatedAt" to FieldValue.serverTimestamp(),
       )
+      if (mappedEmail != null) {
+        val cleanEmail = normalizeMappedEmail(mappedEmail)
+        require(isValidMappedEmail(cleanEmail)) { "Enter a valid Email ID for mapping" }
+        updates["mappedEmail"] = cleanEmail.take(120)
+      }
       if (!newPassword.isNullOrBlank()) {
         require(newPassword.length >= 4) { "Password must be at least 4 characters" }
         updates["passwordHash"] = PasswordHasher.hashPassword(newPassword)
@@ -439,6 +463,22 @@ class BroilerRepository(
         .map { snapshot ->
           snapshot.toObjects(MedicineEntry::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
             .sortedByDescending { it.entryEpochDay }
+        }
+        .catch { error ->
+          logStreamErrorIfAuthenticated(userId, error, OperationType.LIST, path)
+          throw error
+        }
+    )
+  }
+
+  fun observeMedicineCatalog(userId: String): Flow<List<MedicineCatalogItem>> = flow {
+    val path = "users/$userId/medicinesCatalog"
+    emitAll(
+      medicineCatalogCollection(userId)
+        .snapshots()
+        .map { snapshot ->
+          snapshot.toObjects(MedicineCatalogItem::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            .sortedBy { it.medicineCode.uppercase() }
         }
         .catch { error ->
           logStreamErrorIfAuthenticated(userId, error, OperationType.LIST, path)
@@ -900,11 +940,18 @@ class BroilerRepository(
     dispatchEpochDay: Long,
     vehicleNo: String = "",
     remarks: String = "",
+    unitRate: Double = 0.0,
+    rateBasis: String = FeedRateBasis.PER_BAG.value,
+    totalAmount: Double? = null,
   ): Result<String> {
     return runCatching {
       val uid = requireUserId()
       val dispatchId = "dsp_${UUID.randomUUID().toString().replace("-", "").take(16)}"
       val docRef = feedDispatchesCollection(uid).document(dispatchId)
+      val normalizedBasis = FeedRateBasis.fromValue(rateBasis).value
+      val safeRate = unitRate.coerceIn(0.0, 1000000.0)
+      val computedTotal = (totalAmount ?: computeFeedDispatchTotalAmount(bagsCount, weightKg, safeRate, normalizedBasis))
+        .coerceIn(0.0, 200000000.0)
       val payload = mapOf(
         "userId" to uid,
         "batchId" to batch.id,
@@ -916,6 +963,9 @@ class BroilerRepository(
         "feedType" to feedType,
         "bagsCount" to bagsCount,
         "weightKg" to weightKg,
+        "unitRate" to safeRate,
+        "rateBasis" to normalizedBasis,
+        "totalAmount" to computedTotal,
         "challanNo" to challanNo.trim().take(40),
         "vehicleNo" to vehicleNo.trim().uppercase().take(30),
         "remarks" to remarks.trim().take(200),
@@ -1583,16 +1633,26 @@ class BroilerRepository(
     vehicleNo: String = dispatch.vehicleNo,
     remarks: String = dispatch.remarks,
     dispatchEpochDay: Long = dispatch.dispatchEpochDay,
+    unitRate: Double = dispatch.unitRate,
+    rateBasis: String = dispatch.rateBasis,
+    totalAmount: Double? = null,
   ): Result<Unit> {
     return runCatching {
       val uid = requireUserId()
       val docRef = feedDispatchesCollection(uid).document(dispatch.id)
+      val normalizedBasis = FeedRateBasis.fromValue(rateBasis).value
+      val safeRate = unitRate.coerceIn(0.0, 1000000.0)
+      val resolvedTotal = (totalAmount ?: computeFeedDispatchTotalAmount(bagsCount, weightKg, safeRate, normalizedBasis))
+        .coerceIn(0.0, 200000000.0)
       try {
         docRef.update(
           mapOf(
             "feedType" to feedType,
             "bagsCount" to bagsCount,
             "weightKg" to weightKg,
+            "unitRate" to safeRate,
+            "rateBasis" to normalizedBasis,
+            "totalAmount" to resolvedTotal,
             "challanNo" to challanNo.trim().take(40),
             "vehicleNo" to vehicleNo.trim().uppercase().take(30),
             "remarks" to remarks.trim().take(200),
@@ -2074,6 +2134,180 @@ class BroilerRepository(
     return runCatching {
       val uid = requireUserId()
       val docRef = medicineEntriesCollection(uid).document(entryId)
+      try {
+        docRef.delete().await()
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.DELETE, docRef.path)
+        throw e
+      }
+    }
+  }
+
+  suspend fun syncMasterMedicinesCatalog(
+    rows: List<CatalogMedicineRow>,
+    backfillExisting: Boolean = true,
+  ): Result<SyncMedicineCatalogStats> {
+    return runCatching {
+      val uid = requireUserId()
+      if (rows.isEmpty()) return@runCatching SyncMedicineCatalogStats(0, 0)
+
+      val existingItems = medicineCatalogCollection(uid).get().await()
+        .toObjects(MedicineCatalogItem::class.java)
+      val byId = existingItems.associateBy { it.id }
+      val byCodeUpper = existingItems.associateBy { it.medicineCode.trim().uppercase() }
+
+      val writeOps = mutableListOf<(com.google.firebase.firestore.WriteBatch) -> Unit>()
+      var created = 0
+      var backfilled = 0
+
+      rows.forEach { row ->
+        val existingMatch = byId[row.docId] ?: byCodeUpper[row.medicineCode.trim().uppercase()]
+        if (existingMatch == null) {
+          val ref = medicineCatalogCollection(uid).document(row.docId)
+          val payload = mapOf(
+            "userId" to uid,
+            "medicineCode" to row.medicineCode.take(30),
+            "medicineName" to row.medicineName.take(120),
+            "category" to row.category,
+            "packing" to row.packing.coerceIn(0.0, 100000.0),
+            "unit" to row.unit.take(20),
+            "rate" to row.rate.coerceIn(0.0, 10000000.0),
+            "perKgOrLtr" to row.perKgOrLtr.coerceIn(0.0, 10000000.0),
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+          writeOps += { batch -> batch.set(ref, payload) }
+          created += 1
+        } else if (backfillExisting) {
+          val needsUpdate =
+            (existingMatch.unit.isBlank() && row.unit.isNotBlank()) ||
+              (existingMatch.packing == 0.0 && row.packing > 0.0) ||
+              (existingMatch.rate == 0.0 && row.rate > 0.0) ||
+              (existingMatch.perKgOrLtr == 0.0 && row.perKgOrLtr > 0.0)
+          if (needsUpdate) {
+            val ref = medicineCatalogCollection(uid).document(existingMatch.id)
+            writeOps += { batch ->
+              batch.update(
+                ref,
+                mapOf(
+                  "unit" to existingMatch.unit.ifBlank { row.unit }.take(20),
+                  "packing" to if (existingMatch.packing == 0.0) row.packing else existingMatch.packing,
+                  "rate" to if (existingMatch.rate == 0.0) row.rate else existingMatch.rate,
+                  "perKgOrLtr" to if (existingMatch.perKgOrLtr == 0.0) row.perKgOrLtr else existingMatch.perKgOrLtr,
+                  "updatedAt" to FieldValue.serverTimestamp(),
+                ),
+              )
+            }
+            backfilled += 1
+          }
+        }
+      }
+
+      try {
+        writeOps.chunked(400).forEach { chunk ->
+          val batch = db.batch()
+          chunk.forEach { op -> op(batch) }
+          batch.commit().await()
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.WRITE, "users/$uid/medicinesCatalog")
+        throw e
+      }
+
+      SyncMedicineCatalogStats(created, backfilled)
+    }
+  }
+
+  suspend fun createMedicineCatalogItem(
+    medicineCode: String,
+    medicineName: String,
+    category: String,
+    packing: Double,
+    unit: String,
+    rate: Double,
+    perKgOrLtr: Double,
+  ): Result<String> {
+    return runCatching {
+      val uid = requireUserId()
+      val cleanCode = medicineCode.trim().uppercase().take(30)
+      val cleanName = medicineName.trim().take(120)
+      require(cleanCode.isNotEmpty()) { "Medicine code is required" }
+      require(cleanName.isNotEmpty()) { "Medicine name is required" }
+
+      val docId = "med_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+      val docRef = medicineCatalogCollection(uid).document(docId)
+      val payload = mapOf(
+        "userId" to uid,
+        "medicineCode" to cleanCode,
+        "medicineName" to cleanName,
+        "category" to category,
+        "packing" to packing.coerceIn(0.0, 100000.0),
+        "unit" to unit.trim().uppercase().take(20),
+        "rate" to rate.coerceIn(0.0, 10000000.0),
+        "perKgOrLtr" to perKgOrLtr.coerceIn(0.0, 10000000.0),
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp(),
+      )
+      try {
+        docRef.set(payload).await()
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.CREATE, docRef.path)
+        throw e
+      }
+      docId
+    }
+  }
+
+  suspend fun updateMedicineCatalogItem(
+    itemId: String,
+    medicineCode: String,
+    medicineName: String,
+    category: String,
+    packing: Double,
+    unit: String,
+    rate: Double,
+    perKgOrLtr: Double,
+  ): Result<Unit> {
+    return runCatching {
+      val uid = requireUserId()
+      val cleanCode = medicineCode.trim().uppercase().take(30)
+      val cleanName = medicineName.trim().take(120)
+      require(cleanCode.isNotEmpty()) { "Medicine code is required" }
+      require(cleanName.isNotEmpty()) { "Medicine name is required" }
+
+      val docRef = medicineCatalogCollection(uid).document(itemId)
+      try {
+        docRef.update(
+          mapOf(
+            "medicineCode" to cleanCode,
+            "medicineName" to cleanName,
+            "category" to category,
+            "packing" to packing.coerceIn(0.0, 100000.0),
+            "unit" to unit.trim().uppercase().take(20),
+            "rate" to rate.coerceIn(0.0, 10000000.0),
+            "perKgOrLtr" to perKgOrLtr.coerceIn(0.0, 10000000.0),
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        ).await()
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+        throw e
+      }
+    }
+  }
+
+  suspend fun deleteMedicineCatalogItem(itemId: String): Result<Unit> {
+    return runCatching {
+      val uid = requireUserId()
+      val docRef = medicineCatalogCollection(uid).document(itemId)
       try {
         docRef.delete().await()
       } catch (e: CancellationException) {

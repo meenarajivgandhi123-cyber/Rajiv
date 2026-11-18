@@ -15,11 +15,14 @@ import com.example.data.model.KmClaim
 import com.example.data.model.KmClaimReportCalculator
 import com.example.data.model.KmDailyEntry
 import com.example.data.model.KmMonthHelper
+import com.example.data.model.MedicineCatalogItem
+import com.example.data.model.MedicineCategory
 import com.example.data.model.MedicineEntry
 import com.example.data.model.OperatorAccount
 import com.example.data.model.OperatorRole
 import com.example.data.model.SettlementCalculator
 import com.example.data.model.ZoneReportCalculator
+import com.example.data.model.filterAndRankMedicineCatalog
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -334,5 +337,135 @@ class DomainLogicUnitTest {
     assertEquals(2, report.totalDaysLogged)
     assertEquals(105.0, report.entriesTotalKm, 0.01)
     assertEquals(listOf("e1", "e2"), report.dailyEntries.map { it.id })
+  }
+
+  @Test
+  fun batchCreation_farmCodeSearchRanksExactCodeFirstAndMatchesCaseInsensitively() {
+    val farmers = listOf(
+      Farmer(id = "1", farmCode = "F146", farmName = "SUNNY PF", zoneName = "HR ZONE", shedCapacity = 7000L),
+      Farmer(id = "2", farmCode = "F046", farmName = "NIKHIL PF BRASS", zoneName = "HR ZONE", shedCapacity = 9500L),
+      Farmer(id = "3", farmCode = "UPF005", farmName = "JAVED P/F", zoneName = "UP ZONE", shedCapacity = 8866L),
+      Farmer(id = "4", farmCode = "UKF124", farmName = "AMAN UNIT -1PF SIMRA", zoneName = "UK ZONE", shedCapacity = 4000L),
+    )
+
+    val byPartialCode = com.example.ui.components.filterAndRankFarmersForBatchCreation(farmers, "46")
+    assertEquals(listOf("F046", "F146"), byPartialCode.map { it.farmCode })
+
+    val byExactCode = com.example.ui.components.filterAndRankFarmersForBatchCreation(farmers, " f046 ")
+    assertEquals("F046", byExactCode.first().farmCode)
+    assertEquals(
+      "UPF005",
+      com.example.ui.components.findExactFarmCodeMatch(farmers, "upf 005")?.farmCode,
+    )
+    assertEquals(
+      null,
+      com.example.ui.components.findExactFarmCodeMatch(farmers, "UPF"),
+    )
+
+    val byName = com.example.ui.components.filterAndRankFarmersForBatchCreation(farmers, "simra")
+    assertEquals(listOf("UKF124"), byName.map { it.farmCode })
+  }
+
+  @Test
+  fun medicineCatalogSearch_ranksExactCodeAndMatchesNameOrUnit() {
+    val catalog = listOf(
+      MedicineCatalogItem(id = "1", medicineCode = "M080", medicineName = "TEMPERATURE METER", unit = "PCS", rate = 30.0),
+      MedicineCatalogItem(id = "2", medicineCode = "M008", medicineName = "MENTOFIN", unit = "ML", rate = 1330.0),
+      MedicineCatalogItem(id = "3", medicineCode = "V001", medicineName = "MB 5000", category = MedicineCategory.VACCINE.value, unit = "PCS", rate = 1425.0),
+      MedicineCatalogItem(id = "4", medicineCode = "M018", medicineName = "Gumbarok 480ml=1pcs", unit = "PCS", rate = 500.0),
+    )
+
+    val exactCode = filterAndRankMedicineCatalog(catalog, " m008 ")
+    assertEquals(listOf("M008"), exactCode.map { it.medicineCode })
+
+    val partialCode = filterAndRankMedicineCatalog(catalog, "08")
+    assertEquals(listOf("M008", "M080"), partialCode.map { it.medicineCode })
+
+    val byName = filterAndRankMedicineCatalog(catalog, "gumbarok")
+    assertEquals(listOf("M018"), byName.map { it.medicineCode })
+
+    val byCategory = filterAndRankMedicineCatalog(catalog, "vaccine")
+    assertEquals(listOf("V001"), byCategory.map { it.medicineCode })
+  }
+
+  @Test
+  fun feedDispatch_unitRateAndTotalAmount_computesPerBagAndPerKgCorrectly() {
+    val perBagTotal = com.example.data.model.computeFeedDispatchTotalAmount(
+      bagsCount = 40L,
+      weightKg = 2000.0,
+      unitRate = 2150.0,
+      rateBasis = com.example.data.model.FeedRateBasis.PER_BAG.value,
+    )
+    assertEquals(86000.0, perBagTotal, 0.01)
+
+    val perKgTotal = com.example.data.model.computeFeedDispatchTotalAmount(
+      bagsCount = 40L,
+      weightKg = 2000.0,
+      unitRate = 43.5,
+      rateBasis = com.example.data.model.FeedRateBasis.PER_KG.value,
+    )
+    assertEquals(87000.0, perKgTotal, 0.01)
+
+    val fallbackResolved = FeedDispatch(
+      id = "fd1",
+      bagsCount = 20L,
+      weightKg = 1000.0,
+      unitRate = 2100.0,
+      rateBasis = "bag",
+      totalAmount = 0.0,
+    )
+    assertEquals(42000.0, fallbackResolved.resolvedTotalAmount, 0.01)
+  }
+
+  @Test
+  fun medicineEntry_extractsQtyAndComputesTotalCostAutomatically() {
+    assertEquals(1.0, com.example.data.model.extractMedicineQuantity("1 ML")!!, 0.001)
+    assertEquals(2.5, com.example.data.model.extractMedicineQuantity(" 2.5 LTR ")!!, 0.001)
+    assertEquals(250.0, com.example.data.model.extractMedicineQuantity("250ml")!!, 0.001)
+    assertEquals(null, com.example.data.model.extractMedicineQuantity("vials"))
+
+    assertEquals(3990.0, com.example.data.model.computeMedicineTotalCost("3 PCS", 1330.0)!!, 0.01)
+    assertEquals(665.0, com.example.data.model.computeMedicineTotalCost("250 ML", 2.66)!!, 0.01)
+    assertEquals(null, com.example.data.model.computeMedicineTotalCost("2 LTR", 0.0))
+  }
+
+  @Test
+  fun operatorEmailMapping_resolvesSuperAdminEmailCaseInsensitively() {
+    assertEquals("meenarajivgandhi123@gmail.com", com.example.data.model.DEFAULT_SUPER_ADMIN_EMAIL)
+    assertTrue(com.example.data.model.isValidMappedEmail(""))
+    assertTrue(com.example.data.model.isValidMappedEmail("Meenarajivgandhi123@gmail.com"))
+    assertFalse(com.example.data.model.isValidMappedEmail("not-an-email"))
+
+    val inactiveSuper = com.example.data.model.OperatorAccount(
+      id = "op1",
+      empCode = "SA-OLD",
+      role = com.example.data.model.OperatorRole.SUPER_ADMIN.value,
+      isActive = false,
+      mappedEmail = "meenarajivgandhi123@gmail.com",
+    )
+    val activeUser = com.example.data.model.OperatorAccount(
+      id = "op2",
+      empCode = "USR-10",
+      role = com.example.data.model.OperatorRole.USER.value,
+      isActive = true,
+      mappedEmail = "staff@spf.in",
+    )
+    val activeSuper = com.example.data.model.OperatorAccount(
+      id = "op3",
+      empCode = "SA-001",
+      role = com.example.data.model.OperatorRole.SUPER_ADMIN.value,
+      isActive = true,
+      mappedEmail = "meenarajivgandhi123@gmail.com",
+    )
+
+    val resolved = com.example.data.model.findOperatorForEmailMapping(
+      listOf(inactiveSuper, activeUser, activeSuper),
+      "  Meenarajivgandhi123@gmail.com ",
+    )
+    assertEquals("op3", resolved?.id)
+    assertEquals("op2", com.example.data.model.findOperatorForEmailMapping(listOf(activeUser), "STAFF@SPF.IN")?.id)
+    assertTrue(com.example.data.model.isSuperAdminMappedEmail("MEENARAJIVGANDHI123@GMAIL.COM"))
+    assertFalse(com.example.data.model.isSuperAdminMappedEmail("staff@spf.in", listOf(activeUser)))
+    assertTrue(com.example.data.model.isSuperAdminMappedEmail("other_super@spf.in", listOf(activeSuper.copy(mappedEmail = "other_super@spf.in"))))
   }
 }
